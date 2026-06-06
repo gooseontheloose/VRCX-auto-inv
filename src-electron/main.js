@@ -661,7 +661,7 @@ async function createDesktopFile() {
             fs.mkdirSync(iconDir, { recursive: true });
         }
         const iconUrl =
-            'https://raw.githubusercontent.com/vrcx-team/VRCX/master/images/VRCX.png';
+            'https://raw.githubusercontent.com/gooseontheloose/VRCX-auto-inv/master/images/VRCX.png';
         await downloadIcon(iconUrl, iconPath)
             .then(() => {
                 console.log('Icon downloaded and saved to:', iconPath);

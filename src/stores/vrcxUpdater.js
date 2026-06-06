@@ -31,7 +31,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
     const isMacOS = computed(() => navigator.platform.includes('Mac'));
 
     const appVersion = ref('');
-    const autoUpdateVRCX = ref('Auto Download');
+    const autoUpdateVRCX = ref('Notify');
     const latestAppVersion = ref('');
     const branch = ref('Stable');
     const vrcxId = ref('');
@@ -66,12 +66,12 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         }
 
         const [VRCX_autoUpdateVRCX, VRCX_id] = await Promise.all([
-            configRepository.getString('VRCX_autoUpdateVRCX', 'Auto Download'),
+            configRepository.getString('VRCX_autoUpdateVRCX', 'Notify'),
             configRepository.getString('VRCX_id', '')
         ]);
 
         if (VRCX_autoUpdateVRCX === 'Auto Install') {
-            autoUpdateVRCX.value = 'Auto Download';
+            autoUpdateVRCX.value = 'Notify';
         } else {
             autoUpdateVRCX.value = VRCX_autoUpdateVRCX;
         }
