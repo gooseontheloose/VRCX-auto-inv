@@ -16,8 +16,6 @@ This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the V
 
 <div align="center">
 
-## What's Different in This Fork
-
 <div align="center">
 
 ## What's Different in This Fork
