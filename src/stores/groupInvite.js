@@ -21,7 +21,11 @@ const DELAY_PRESETS = {
     relaxed: 6000,
     cautious: 8000,
     slow: 10000,
-    stealth: 15000
+    stealth: 15000,
+    very_slow: 20000,
+    glacial: 30000,
+    painful: 45000,
+    absurd: 60000
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,6 +42,7 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
     // ── State ──────────────────────────────────────────────────
     const selectedGroupId = ref('');
     const autoInviteEnabled = ref(false);
+    const autoInvite18PlusOnly = ref(false);
     const autoInvitePickupDelay = ref(5000); // Ms to wait after joining before processing
     const autoInviteQueue = ref([]);
     const isAutoInviterRunning = ref(false);
@@ -154,6 +159,10 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
             'groupInviteToolkit_delayPreset',
             'normal'
         );
+        autoInvite18PlusOnly.value = await configRepository.getBool(
+            'groupInviteToolkit_auto18plus',
+            false
+        );
         autoInvitePickupDelay.value = parseInt(await configRepository.getString(
             'groupInviteToolkit_pickupDelay',
             '5000'
@@ -219,6 +228,10 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
             'groupInviteToolkit_delayPreset',
             delayPreset.value
         );
+        await configRepository.setBool(
+            'groupInviteToolkit_auto18plus',
+            autoInvite18PlusOnly.value
+        );
         await configRepository.setString(
             'groupInviteToolkit_pickupDelay',
             autoInvitePickupDelay.value.toString()
@@ -232,6 +245,7 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
     loadSettings();
 
     watch(selectedGroupId, saveSettings);
+    watch(autoInvite18PlusOnly, saveSettings);
     watch(delayPreset, saveSettings);
     watch(autoInvitePickupDelay, saveSettings);
     watch(blacklist, saveSettings, { deep: true });
@@ -739,6 +753,25 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
     async function handlePlayerJoined(userId, displayName) {
         if (!autoInviteEnabled.value || !selectedGroupId.value || userId === userStore.currentUser.id) return;
 
+        // 18+ Only filter: skip if enabled and user isn't age-verified
+        if (autoInvite18PlusOnly.value) {
+            // Try to fetch user profile if not cached
+            let cachedUser = userStore.cachedUsers.get(userId);
+            if (!cachedUser) {
+                try {
+                    cachedUser = await userRequest.getUser({ userId });
+                    cachedUser = userStore.cachedUsers.get(userId);
+                } catch (e) {
+                    console.warn(`[AutoInvite] Could not fetch profile for ${displayName}`, e);
+                }
+            }
+            if (cachedUser?.ageVerified !== true) {
+                console.log(`[AutoInvite] Skipped ${displayName} — not 18+ verified.`);
+                addLog(userId, displayName, selectedGroupId.value, 'skipped', 'Not 18+ verified');
+                return;
+            }
+        }
+
         // Skip if hitting rate limits soon (loop will also handle this but protects queue from over-filling)
         if (rateLimitStrikes.value >= 3) {
             console.log(`[AutoInvite] Skipped enqueueing ${displayName} — rate limit active.`);
@@ -836,6 +869,24 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
                     await sleep(remainingPickupDelay);
                 }
 
+                // 18+ Only filter for queued users
+                if (autoInvite18PlusOnly.value) {
+                    let cachedUser = userStore.cachedUsers.get(userId);
+                    if (!cachedUser) {
+                        try {
+                            await userRequest.getUser({ userId });
+                            cachedUser = userStore.cachedUsers.get(userId);
+                        } catch (e) {
+                            console.warn(`[AutoInvite Queue] Could not fetch profile for ${displayName}`, e);
+                        }
+                    }
+                    if (cachedUser?.ageVerified !== true) {
+                        console.log(`[AutoInvite Queue] Skipped ${displayName} — not 18+ verified.`);
+                        addLog(userId, displayName, groupId, 'skipped', 'Not 18+ verified', worldName, sender);
+                        continue;
+                    }
+                }
+
                 try {
                     // Send the single invite payload
                     const result = await sendSingleInvite(userId, displayName, groupId, worldName, sender);
@@ -851,8 +902,8 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
                             rateLimitCooldownUntil.value = Date.now() + 15000;
                         } else {
                             // Strike 2+
-                            console.log(`[AutoInvite Queue] Strike ${rateLimitStrikes.value}: Mandatory 10 minute cooldown...`);
-                            rateLimitCooldownUntil.value = Date.now() + (10 * 60 * 1000);
+                            console.log(`[AutoInvite Queue] Strike ${rateLimitStrikes.value}: Mandatory 1 hour cooldown...`);
+                            rateLimitCooldownUntil.value = Date.now() + (60 * 60 * 1000);
                         }
                         // Re-add user back to the front of the queue so we don't lose them
                         autoInviteQueue.value.unshift({ userId, displayName, groupId, addedAt, worldName, sender });
@@ -894,6 +945,7 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
         // State
         selectedGroupId,
         autoInviteEnabled,
+        autoInvite18PlusOnly,
         autoInvitePickupDelay,
         autoInviteQueue,
         isAutoInviterRunning,

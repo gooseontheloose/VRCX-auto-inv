@@ -95,6 +95,30 @@
                             Stealth (15s)
                         </div>
                     </SelectItem>
+                    <SelectItem value="very_slow">
+                        <div class="flex items-center gap-1.5">
+                            <Timer class="h-3 w-3 text-red-500" />
+                            Very Slow (20s)
+                        </div>
+                    </SelectItem>
+                    <SelectItem value="glacial">
+                        <div class="flex items-center gap-1.5">
+                            <Timer class="h-3 w-3 text-red-500" />
+                            Glacial (30s)
+                        </div>
+                    </SelectItem>
+                    <SelectItem value="painful">
+                        <div class="flex items-center gap-1.5">
+                            <Timer class="h-3 w-3 text-red-500" />
+                            Painful (45s)
+                        </div>
+                    </SelectItem>
+                    <SelectItem value="absurd">
+                        <div class="flex items-center gap-1.5">
+                            <Timer class="h-3 w-3 text-red-500" />
+                            Absurd (60s)
+                        </div>
+                    </SelectItem>
                 </SelectContent>
             </Select>
         </div>
@@ -216,6 +240,25 @@
                 </Select>
             </div>
             
+            <div :class="['flex items-center gap-2 mt-2 rounded-md border px-2.5 py-1.5 transition-all duration-300', autoInvite18PlusOnly ? 'border-green-500/40 bg-green-500/10 shadow-[0_0_12px_rgba(34,197,94,0.15)]' : 'border-transparent']">
+                <div class="flex items-center gap-2 flex-1">
+                    <Switch
+                        id="autoInvite18Plus"
+                        :disabled="!selectedGroupId"
+                        v-model:checked="autoInvite18PlusOnly"
+                    />
+                    <Shield :class="['size-3.5 transition-all duration-300', autoInvite18PlusOnly ? 'text-green-400 drop-shadow-[0_0_4px_rgba(34,197,94,0.5)]' : 'text-muted-foreground/40']" />
+                    <label
+                        for="autoInvite18Plus"
+                        :class="['text-[11px] cursor-pointer select-none transition-all duration-300', autoInvite18PlusOnly ? 'text-green-300 font-bold tracking-wide drop-shadow-[0_0_3px_rgba(34,197,94,0.4)]' : 'text-muted-foreground']">
+                        18+ Only
+                    </label>
+                </div>
+                <span :class="['text-[10px] transition-all duration-300', autoInvite18PlusOnly ? 'text-green-400/80' : 'text-muted-foreground/60']">
+                    {{ autoInvite18PlusOnly ? 'Age-verified only' : 'Only invite age-verified users' }}
+                </span>
+            </div>
+            
             <div class="mt-2 text-center h-4 flex items-center justify-center">
                 <span v-if="isRateLimited && autoInviteEnabled" class="text-[10px] text-amber-500 font-medium tracking-wide">
                     Rate Limit active. Safely waiting for cooldown before next attempt...
@@ -269,25 +312,10 @@
                     </Button>
                 </CollapsibleTrigger>
                 <CollapsibleContent>
-                    <!-- Log Controls -->
-                    <div class="flex justify-end p-1">
-                        <Select v-model="consoleSize">
-                            <SelectTrigger class="h-5 text-[10px] bg-transparent border border-border/50 w-[70px] px-1 text-muted-foreground hover:text-foreground">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectGroup>
-                                    <SelectItem :value="50" class="text-[10px]">Hist: 50</SelectItem>
-                                    <SelectItem :value="100" class="text-[10px]">Hist: 100</SelectItem>
-                                    <SelectItem :value="250" class="text-[10px]">Hist: 250</SelectItem>
-                                </SelectGroup>
-                            </SelectContent>
-                        </Select>
-                    </div>
                     <!-- Log Rows -->
                     <div class="max-h-28 overflow-y-auto space-y-px rounded-md bg-muted/40 p-1.5">
                     <div
-                        v-for="(entry, idx) in inviteLog.slice(0, consoleSize)"
+                        v-for="(entry, idx) in inviteLog.slice(0, 250)"
                         :key="idx"
                         class="flex items-center gap-1.5 text-[11px] leading-4 px-1 py-0.5 rounded hover:bg-muted/60">
                         <span class="text-muted-foreground/50 text-[10px] w-[55px] flex-none whitespace-nowrap" :title="new Date(entry.timestamp).toLocaleString()">
@@ -412,11 +440,10 @@
     const groupInviteStore = useGroupInviteStore();
     const modalStore = useModalStore();
 
-    const consoleSize = ref(50);
-
     const {
         selectedGroupId,
         autoInviteEnabled,
+        autoInvite18PlusOnly,
         autoInvitePickupDelay,
         autoInviteQueue,
         delayPreset,
