@@ -27,6 +27,7 @@ const whatsNewReleases = Object.freeze({
  */
 function normalizeReleaseVersion(version) {
     const normalizedVersion = String(version || '')
+        .replace(/^PAW Inviter - VRCX\s+/, '')
         .replace(/^VRCX\s+/, '')
         .trim();
     return /^\d{4}\.\d{2}\.\d{2}$/.test(normalizedVersion)
