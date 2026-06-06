@@ -12,7 +12,23 @@
 
 This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the VRChat assistant/companion application — with added features focused on automated group instance invite management.
 
+</div>
+
+<div align="center">
+
 ## What's Different in This Fork
+
+<div align="center">
+
+This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the VRChat assistant/companion application — with added features focused on automated group instance invite management.
+
+</div>
+
+<div align="center">
+
+## What's Different in This Fork
+
+<div align="left">
 
 - **Auto-Invite System** — Automatically invite group members to your instance with configurable speed presets (from 5 minutes down to 20 seconds)
 - **18+ Only Toggle** — Filter invites to age-verified users only
@@ -21,7 +37,11 @@ This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the V
 - **Auto-Updates** — Set to notify by default; checks this GitHub repo for new releases
 - **Activity Log Shows 250 Entries** — Console log always shows full history (dropdown removed)
 
+</div>
+
 All original VRCX features remain intact. See below for the full feature list.
+
+</div>
 
 # Getting Started
 
@@ -30,6 +50,9 @@ All original VRCX features remain intact. See below for the full feature list.
 Download the latest release (`VRCX-2.0-Build-Only-Exe.zip`) from [here](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest), extract it, and run `VRCX.exe` — no installation or .NET runtime required.
 
 For macOS and Linux check [here](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux) for more info.
+
+
+</div>
 
 # Features
 
