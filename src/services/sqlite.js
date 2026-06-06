@@ -17,10 +17,10 @@ class SQLiteService {
                     .then(({ ok }) => {
                         if (!ok) return;
                         openExternalLink(
-                            'https://github.com/vrcx-team/VRCX/wiki#how-to-repair-vrcx-database'
+                            'https://github.com/gooseontheloose/VRCX-auto-inv/wiki#how-to-repair-vrcx-database'
                         );
                     })
-                    .catch(() => {});
+                    .catch(() => { });
             }
             if (e.message.includes('database or disk is full')) {
                 modalStore.alert({

@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
     notifiedMenus: { value: [] },
     pendingVRCXUpdate: { value: false },
     pendingVRCXInstall: { value: false },
-    appVersion: { value: 'VRCX 2026.01.01' },
+    appVersion: { value: 'PAWTISTIC VRCX 2026.01.01' },
     themeMode: { value: 'system' },
     tableDensity: { value: 'standard' },
     isDarkMode: { value: false },
@@ -170,7 +170,7 @@ vi.mock('../../../shared/constants', () => ({
     },
     isToolNavKey: (key) => typeof key === 'string' && key.startsWith('tool-'),
     links: {
-        github: 'https://github.com/vrcx-team/VRCX'
+        github: 'https://github.com/gooseontheloose/VRCX-auto-inv'
     },
     navDefinitions: [
         {

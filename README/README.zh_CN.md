@@ -2,9 +2,9 @@
 
 # <img src="https://raw.githubusercontent.com/vrcx-team/VRCX/master/images/VRCX.ico" width="64" height="64"> </img> VRCX
 
-[![GitHub release](https://img.shields.io/github/release/vrcx-team/VRCX.svg)](https://github.com/vrcx-team/VRCX/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/vrcx-team/VRCX/total?color=6451f1)](https://github.com/vrcx-team/VRCX/releases/latest)
-[![GitHub Workflow Status](https://github.com/vrcx-team/VRCX/actions/workflows/github_actions.yml/badge.svg)](https://github.com/vrcx-team/VRCX/actions/workflows/github_actions.yml)
+[![GitHub release](https://img.shields.io/github/release/vrcx-team/VRCX.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/vrcx-team/VRCX/total?color=6451f1)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![GitHub Workflow Status](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml/badge.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml)
 [![VRCX Discord Invite](https://img.shields.io/discord/854071236363550763?color=%237289DA&logo=discord&logoColor=white&label=discord)](https://vrcx.app/discord)
 
 | [English](/README.md) |
@@ -15,7 +15,7 @@ VRCX 是一款用于 VRChat 的外部辅助小工具，可以比 VRChat 游戏�
 
 <div align="center">
 
-可以从[这里](https://github.com/vrcx-team/VRCX/releases/latest)下载最新的安装程序（安装程序的文件名是`VRCX_Setup.exe`）。
+可以从[这里](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)下载最新的安装程序（安装程序的文件名是`VRCX_Setup.exe`）。
 
 如果需要，每夜（测试版）构建也可从[这里](https://vrcx.app/github/nightly)下载，或通过程序内的 `设置 -> 通用 -> VRCX 更新设置 -> 更改版本` 按钮获取。
 
@@ -52,9 +52,9 @@ VRCX 是一款用于 VRChat 的外部辅助小工具，可以比 VRChat 游戏�
 
 ## 一些其他的东西
 
-- 想让 VRCX 的外观看起来独特一些？请查看 [Themes](https://github.com/vrcx-team/VRCX/wiki/Themes) （英语）了解如何制作界面主题
-- 查看 [Building from source](https://github.com/vrcx-team/VRCX/wiki/Building-from-source) （英语）以获得从源码构建 VRCX 的相关说明
-- 若想了解如何在 Linux 上运行 VRCX，请点击[这里](https://github.com/vrcx-team/VRCX/wiki/Running-VRCX-on-Linux)（英语）查看相关说明
+- 想让 VRCX 的外观看起来独特一些？请查看 [Themes](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Themes) （英语）了解如何制作界面主题
+- 查看 [Building from source](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Building-from-source) （英语）以获得从源码构建 VRCX 的相关说明
+- 若想了解如何在 Linux 上运行 VRCX，请点击[这里](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux)（英语）查看相关说明
 
 # 界面截图
 

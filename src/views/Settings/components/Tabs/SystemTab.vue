@@ -127,7 +127,7 @@
                     src="https://contrib.rocks/image?repo=vrcx-team/VRCX"
                     alt="Contributors"
                     class="cursor-pointer"
-                    @click="openExternalLink('https://github.com/vrcx-team/VRCX/graphs/contributors')" />
+                    @click="openExternalLink('https://github.com/gooseontheloose/VRCX-auto-inv/graphs/contributors')" />
             </div>
         </SettingsGroup>
 

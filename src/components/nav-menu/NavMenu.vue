@@ -322,7 +322,7 @@
     };
 
     const openGithub = () => {
-        openExternalLink('https://github.com/vrcx-team/VRCX');
+        openExternalLink('https://github.com/gooseontheloose/VRCX-auto-inv');
     };
 
     const handleSupportLink = (id) => {

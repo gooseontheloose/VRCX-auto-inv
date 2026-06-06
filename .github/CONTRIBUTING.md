@@ -6,7 +6,7 @@ Thank you for your interest in contributing to VRCX! Here are a few guidelines t
 
 - **Large changes require prior discussion.** If your PR involves significant new features, refactors, or architectural changes, please open an issue first to discuss the approach. PRs submitted without prior discussion may not be accepted.
 - **Small fixes are always welcome.** Typo fixes, bug fixes, and minor improvements can be submitted directly.
-- **UI-related PRs will most likely be declined.** To maintain a consistent and cohesive user interface, PRs that modify UI elements (layouts, styling, visual components, etc.) are generally not accepted. If you have a UI suggestion or improvement idea, please [Open an issue](https://github.com/vrcx-team/VRCX/issues/new) instead so we can discuss it with the team.
+- **UI-related PRs will most likely be declined.** To maintain a consistent and cohesive user interface, PRs that modify UI elements (layouts, styling, visual components, etc.) are generally not accepted. If you have a UI suggestion or improvement idea, please [Open an issue](https://github.com/gooseontheloose/VRCX-auto-inv/issues/new) instead so we can discuss it with the team.
 
 ## Important Considerations
 
@@ -25,7 +25,7 @@ VRCX is designed to perform well for users with **1,000 to 4,000 friends**. For 
 
 ## Looking for Something to Work On?
 
-Check out issues labeled [`PR welcome`](https://github.com/vrcx-team/VRCX/issues?q=label%3A%22pr+welcome%22+is%3Aclosed) — these are contributions we'd love to see.
+Check out issues labeled [`PR welcome`](https://github.com/gooseontheloose/VRCX-auto-inv/issues?q=label%3A%22pr+welcome%22+is%3Aclosed) — these are contributions we'd love to see.
 
 - These issues are listed under **Closed** issues, not Open, so make sure to check the closed tab. We keep them in Closed to avoid cluttering the Open issues list.
 - You can link the issue in your PR, and once merged, we will mark the issue as completed.

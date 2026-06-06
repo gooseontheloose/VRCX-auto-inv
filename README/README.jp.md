@@ -2,9 +2,9 @@
 
 # <img src="https://raw.githubusercontent.com/vrcx-team/VRCX/master/images/VRCX.ico" width="64" height="64"> </img> VRCX
 
-[![GitHub release](https://img.shields.io/github/release/vrcx-team/VRCX.svg)](https://github.com/vrcx-team/VRCX/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/vrcx-team/VRCX/total?color=6451f1)](https://github.com/vrcx-team/VRCX/releases/latest)
-[![GitHub Workflow Status](https://github.com/vrcx-team/VRCX/actions/workflows/github_actions.yml/badge.svg)](https://github.com/vrcx-team/VRCX/actions/workflows/github_actions.yml)
+[![GitHub release](https://img.shields.io/github/release/vrcx-team/VRCX.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/vrcx-team/VRCX/total?color=6451f1)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![GitHub Workflow Status](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml/badge.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml)
 [![VRCX Discord Invite](https://img.shields.io/discord/854071236363550763?color=%237289DA&logo=discord&logoColor=white&label=discord)](https://vrcx.app/discord)
 
 | [English](/README.md) |
@@ -15,7 +15,7 @@ VRCX は VRChat クライアント (デスクトップ & VR) や Web サイト�
 
 <div align="center">
 
-[こちら](https://github.com/vrcx-team/VRCX/releases/latest)から最新のインストーラー (`VRCX_Setup.exe`) をダウンロードして実行してください。
+[こちら](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)から最新のインストーラー (`VRCX_Setup.exe`) をダウンロードして実行してください。
 
 # 機能
 
@@ -51,9 +51,9 @@ VRCX は VRChat クライアント (デスクトップ & VR) や Web サイト�
 
 ## その他
 
-- VRCX の変わった姿を見たい？[テーマ](https://github.com/vrcx-team/VRCX/wiki/Themes)をチェック！
-- VRCX をソースからビルドするには[こちらのガイド](https://github.com/vrcx-team/VRCX/wiki/Building-from-source)をご覧ください。
-- VRCX を Linux で動かすには[こちらのガイド](https://github.com/vrcx-team/VRCX/wiki/Running-VRCX-on-Linux)をご覧ください。
+- VRCX の変わった姿を見たい？[テーマ](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Themes)をチェック！
+- VRCX をソースからビルドするには[こちらのガイド](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Building-from-source)をご覧ください。
+- VRCX を Linux で動かすには[こちらのガイド](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux)をご覧ください。
 
 # Screenshots
 

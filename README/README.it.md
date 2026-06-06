@@ -2,9 +2,9 @@
 
 # <img src="https://raw.githubusercontent.com/vrcx-team/VRCX/master/images/VRCX.ico" width="64" height="64"> </img> VRCX
 
-[![GitHub release](https://img.shields.io/github/release/vrcx-team/VRCX.svg)](https://github.com/vrcx-team/VRCX/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/vrcx-team/VRCX/total?color=6451f1)](https://github.com/vrcx-team/VRCX/releases/latest)
-[![GitHub Workflow Status](https://github.com/vrcx-team/VRCX/actions/workflows/github_actions.yml/badge.svg)](https://github.com/vrcx-team/VRCX/actions/workflows/github_actions.yml)
+[![GitHub release](https://img.shields.io/github/release/vrcx-team/VRCX.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/vrcx-team/VRCX/total?color=6451f1)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![GitHub Workflow Status](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml/badge.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml)
 [![VRCX Discord Invite](https://img.shields.io/discord/854071236363550763?color=%237289DA&logo=discord&logoColor=white&label=discord)](https://vrcx.app/discord)
 
 | [English](/README.md) |
@@ -15,7 +15,7 @@ VRCX è un'applicazione di assistenza/accompagnamento per VRChat che fornisce in
 
 <div align="center">
 
-Scarica e installa l'ultimo installer (`VRCX_Setup.exe`) da [qui](https://github.com/vrcx-team/VRCX/releases/latest).
+Scarica e installa l'ultimo installer (`VRCX_Setup.exe`) da [qui](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest).
 
 # Funzionalità
 
@@ -50,9 +50,9 @@ Scarica e installa l'ultimo installer (`VRCX_Setup.exe`) da [qui](https://github
 
 ## Varie
 
-- Volete un nuovo look per VRCX? [Temi](https://github.com/vrcx-team/VRCX/wiki/Themes)
-- Guarda [Building from source](https://github.com/vrcx-team/VRCX/wiki/Building-from-source) per le istruzioni su come buildare VRCX dai sorgenti.
-- Per una guida su come far funzionare VRCX su Linux, vedere [qui](https://github.com/vrcx-team/VRCX/wiki/Running-VRCX-on-Linux)
+- Volete un nuovo look per VRCX? [Temi](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Themes)
+- Guarda [Building from source](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Building-from-source) per le istruzioni su come buildare VRCX dai sorgenti.
+- Per una guida su come far funzionare VRCX su Linux, vedere [qui](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux)
 
 # Screenshots
 
