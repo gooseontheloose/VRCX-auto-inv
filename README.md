@@ -1,25 +1,35 @@
 <div align="center">
 
-# <img src="https://raw.githubusercontent.com/vrcx-team/VRCX/master/images/VRCX.ico" width="64" height="64"> </img> VRCX
+# PAW Inviter - VRCX
 
-[![GitHub release](https://img.shields.io/github/release/vrcx-team/VRCX.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/vrcx-team/VRCX/total?color=6451f1)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
-[![GitHub Workflow Status](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml/badge.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/actions/workflows/github_actions.yml)
-[![VRCX Discord Invite](https://img.shields.io/discord/854071236363550763?color=%237289DA&logo=discord&logoColor=white&label=discord)](https://vrcx.app/discord)
+**A modified fork of VRCX with enhanced auto-invite features**
+
+[![GitHub release](https://img.shields.io/github/release/gooseontheloose/VRCX-auto-inv.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/gooseontheloose/VRCX-auto-inv/total?color=6451f1)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
+[![Discord](https://img.shields.io/discord/854071236363550763?color=%237289DA&logo=discord&logoColor=white&label=discord)](https://vrcx.app/discord)
 
 | **English** | [Français](./README/README.fr.md) | [日本語](./README/README.jp.md) | [简体中文](./README/README.zh_CN.md) | [Italiano](./README/README.it.md) | [Русский](./README/README.ru_RU.md) | [Español](./README/README.es.md) | [Polski](./README/README.pl.md) | [ภาษาไทย](./README/README.th.md) | [Magyar](./README/README.hu.md)
 
-VRCX is an assistant/companion application for VRChat that provides information about and helps you accomplish various things related to VRChat in a more convenient fashion than relying on the plain VRChat client (desktop or VR), or website alone. It also includes some other neat features outlined below.
+This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the VRChat assistant/companion application — with added features focused on automated group instance invite management.
+
+## What's Different in This Fork
+
+- **Auto-Invite System** — Automatically invite group members to your instance with configurable speed presets (from 5 minutes down to 20 seconds)
+- **18+ Only Toggle** — Filter invites to age-verified users only
+- **Rate Limiting** — Cooldown increased to 1 hour to avoid rate limits
+- **Self-Contained Build** — No .NET runtime required; just download and run the standalone exe
+- **Auto-Updates** — Set to notify by default; checks this GitHub repo for new releases
+- **Activity Log Shows 250 Entries** — Console log always shows full history (dropdown removed)
+
+All original VRCX features remain intact. See below for the full feature list.
 
 # Getting Started
 
 <div align="center">
 
-Download and install the latest installer (`VRCX_Setup.exe`) from [here](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest).
+Download the latest release (`VRCX-2.0-Build-Only-Exe.zip`) from [here](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest), extract it, and run `VRCX.exe` — no installation or .NET runtime required.
 
 For macOS and Linux check [here](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux) for more info.
-
-Beta/nightly build available [here](https://vrcx.app/github/nightly) or in-app `Settings -> General -> Change build`.
 
 # Features
 
@@ -58,9 +68,9 @@ Beta/nightly build available [here](https://vrcx.app/github/nightly) or in-app `
 
 ## Miscellaneous
 
-- Want a new look for VRCX? Check out [Themes](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Themes)
-- See [Building from source](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Building-from-source) for instructions on how to build VRCX from source.
-- For a guide on how to run VRCX on Linux, see [here](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux)
+- Want a new look? Check out [Themes](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Themes)
+- See [Building from source](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Building-from-source) for instructions on how to build from source.
+- For a guide on how to run on Linux, see [here](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux)
 - Interested in contributing? See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines.
 
 # Screenshots
@@ -125,19 +135,16 @@ Beta/nightly build available [here](https://vrcx.app/github/nightly) or in-app `
 
 <img src="https://github-production-user-asset-6210df.s3.amazonaws.com/82102170/251997318-5a71249c-59fc-4ad6-9194-d6b1d4165600.png" alt="discord">
 
-<!-- The other images will be similar to this -->
 </div>
 
-## Is VRCX against VRChat's TOS?
+## Is this against VRChat's TOS?
 
 **No.**
 
-VRCX is an external tool that uses the VRChat API to provide the features it does.
-
-It does not modify the game in any way, only using the API responsibly to provide the features it does. It is not a mod, or a cheat, or any other form of modification to the game.
+This fork (like the original VRCX) is an external tool that uses the VRChat API to provide its features. It does not modify the game in any way, only using the API responsibly. It is not a mod, cheat, or any other form of modification to the game.
 
 To see VRChat's stance on API usage, see the #faq channel in the VRChat Discord.
 
 ---
 
-VRCX is not endorsed by VRChat and does not reflect the views or opinions of VRChat or anyone officially involved in producing or managing VRChat properties. VRChat and all associated properties are trademarks or registered trademarks of VRChat Inc. VRChat © VRChat Inc.
+PAW Inviter - VRCX is not endorsed by VRChat and does not reflect the views or opinions of VRChat or anyone officially involved in producing or managing VRChat properties. VRChat and all associated properties are trademarks or registered trademarks of VRChat Inc. VRChat © VRChat Inc.
