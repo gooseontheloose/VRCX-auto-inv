@@ -20,12 +20,6 @@ This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the V
 
 <div align="center">
 
-This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the VRChat assistant/companion application — with added features focused on automated group instance invite management.
-
-</div>
-
-<div align="center">
-
 ## What's Different in This Fork
 
 <div align="left">
