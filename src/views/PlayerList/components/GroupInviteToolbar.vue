@@ -245,7 +245,7 @@
                     <Switch
                         id="autoInvite18Plus"
                         :disabled="!selectedGroupId"
-                        v-model:checked="autoInvite18PlusOnly"
+                        v-model="autoInvite18PlusOnly"
                     />
                     <Shield :class="['size-3.5 transition-all duration-300', autoInvite18PlusOnly ? 'text-green-400 drop-shadow-[0_0_4px_rgba(34,197,94,0.5)]' : 'text-muted-foreground/40']" />
                     <label
