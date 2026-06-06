@@ -605,9 +605,9 @@ async function installVRCX() {
     if (!hasAskedToMoveAppImage && appImagePath !== appImageHomePath) {
         const result = dialog.showMessageBoxSync(mainWindow, {
             type: 'question',
-            title: 'VRCX',
-            message: 'Do you want to install VRCX?',
-            detail: 'VRCX will be moved to your ~/Applications folder.',
+            title: 'PAW Inviter - VRCX',
+            message: 'Do you want to install PAW Inviter - VRCX?',
+            detail: 'PAW Inviter - VRCX will be moved to your ~/Applications folder.',
             buttons: ['No', 'Yes']
         });
         if (result === 0) {
@@ -810,13 +810,13 @@ function getVersion() {
         const version = versionFile.split('-');
         console.log('Version:', versionFile);
         if (version.length > 0 && version[version.length - 1].length == 7) {
-            return `VRCX (Linux) Nightly ${versionFile}`;
+            return `PAW Inviter - VRCX (Linux) Nightly ${versionFile}`;
         } else {
-            return `VRCX (Linux) ${versionFile}`;
+            return `PAW Inviter - VRCX (Linux) ${versionFile}`;
         }
     } catch (err) {
         console.error('Error reading Version:', err);
-        return 'VRCX (Linux) Nightly Build';
+        return 'PAW Inviter - VRCX (Linux) Nightly Build';
     }
 }
 
