@@ -34,6 +34,7 @@ export function createBaseDefaultNavLayout(t) {
             items: ['charts-instance', 'charts-mutual', 'charts-hot-worlds']
         },
         { type: 'item', key: 'tools' },
+        { type: 'item', key: 'username-checker' },
         { type: 'item', key: 'direct-access' }
     ];
 }

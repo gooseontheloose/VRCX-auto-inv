@@ -62,6 +62,7 @@
         "friend_list": "Friend List",
         "charts": "Charts",
         "tools": "Tools",
+        "username_checker": "Username Checker",
         "settings": "Settings",
         "manage": "Manage",
         "help_support": "Help & Support",
@@ -223,6 +224,9 @@
         }
     },
     "view": {
+        "username_checker": {
+            "title": "Username Checker"
+        },
         "login": {
             "savedAccounts": "Saved Accounts",
             "login": "Login",
