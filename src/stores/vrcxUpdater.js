@@ -243,6 +243,20 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
             await configRepository.setString('VRCX_id', vrcxId.value);
         }
     }
+    // True semver comparison — avoids "2.0.10" < "2.0.9" string trap
+    function semverGt(a, b) {
+        const extract = (s) => {
+            const m = String(s).match(/(\d+)\.(\d+)\.?(\d*)/);
+            if (!m) return [0, 0, 0];
+            return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3] || '0', 10)];
+        };
+        const [aMaj, aMin, aPat] = extract(a);
+        const [bMaj, bMin, bPat] = extract(b);
+        if (aMaj !== bMaj) return aMaj > bMaj;
+        if (aMin !== bMin) return aMin > bMin;
+        return aPat > bPat;
+    }
+
     function getAssetOfInterest(assets) {
         let downloadUrl = '';
         let hashString = '';
@@ -255,7 +269,8 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
                 WINDOWS &&
                 asset.name.endsWith('.exe') &&
                 (asset.content_type === 'application/x-msdownload' ||
-                    asset.content_type === 'application/x-msdos-program')
+                    asset.content_type === 'application/x-msdos-program' ||
+                    asset.content_type === 'application/octet-stream')
             ) {
                 downloadUrl = asset.browser_download_url;
                 if (asset.digest && asset.digest.startsWith('sha256:')) {
@@ -337,7 +352,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
             if (releaseName === pendingVRCXInstall.value) {
                 // update already downloaded
                 VRCXUpdateDialog.value.updatePendingIsLatest = true;
-            } else if (releaseName > currentVersion.value) {
+            } else if (semverGt(releaseName, currentVersion.value)) {
                 const { downloadUrl, hashString, size } = getAssetOfInterest(
                     json.assets
                 );

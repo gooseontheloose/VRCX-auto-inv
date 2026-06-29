@@ -30,9 +30,10 @@ function normalizeReleaseVersion(version) {
         .replace(/^PAW Inviter - VRCX\s+/, '')
         .replace(/^VRCX\s+/, '')
         .trim();
-    return /^\d{4}\.\d{2}\.\d{2}$/.test(normalizedVersion)
-        ? normalizedVersion
-        : '';
+    // Accept YYYY.MM.DD (original VRCX date format) or X.Y.Z semver (PAW Inviter)
+    if (/^\d{4}\.\d{2}\.\d{2}$/.test(normalizedVersion)) return normalizedVersion;
+    if (/^\d+\.\d+\.\d+$/.test(normalizedVersion)) return normalizedVersion;
+    return '';
 }
 
 /**
