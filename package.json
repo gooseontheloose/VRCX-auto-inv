@@ -29,7 +29,7 @@
         "test": "vitest run",
         "test:coverage": "vitest run --coverage",
         "build:licenses": "node ./build-scripts/generate-third-party-licenses.js",
-        "prod": "cross-env PLATFORM=windows vite build src && npm run build:licenses",
+        "prod": "cross-env PLATFORM=windows vite build src && npm run build:licenses && node ./build-scripts/copy-to-cef.js",
         "prod-linux": "cross-env PLATFORM=linux vite build src && npm run build:licenses",
         "build-electron": "node ./src-electron/download-dotnet-runtime.js --arch=x64 && node ./src-electron/patch-package-version.js && electron-builder --x64 --publish never",
         "build-electron-arm64": "node ./src-electron/download-dotnet-runtime.js --arch=arm64 && node ./src-electron/patch-package-version.js && electron-builder --arm64 --publish never",
