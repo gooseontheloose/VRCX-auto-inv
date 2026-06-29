@@ -35,6 +35,7 @@ export function createBaseDefaultNavLayout(t) {
         },
         { type: 'item', key: 'tools' },
         { type: 'item', key: 'username-checker' },
+        { type: 'item', key: 'group-monitor' },
         { type: 'item', key: 'direct-access' }
     ];
 }

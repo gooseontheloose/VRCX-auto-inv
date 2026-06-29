@@ -7,6 +7,7 @@ import FavoritesFriend from './../views/Favorites/FavoritesFriend.vue';
 import FavoritesWorld from './../views/Favorites/FavoritesWorld.vue';
 import Feed from './../views/Feed/Feed.vue';
 import UsernameChecker from './../views/UsernameChecker/UsernameChecker.vue';
+import GroupMonitor from './../views/GroupMonitor/GroupMonitor.vue';
 import FriendList from './../views/FriendList/FriendList.vue';
 import FriendLog from './../views/FriendLog/FriendLog.vue';
 import FriendsLocations from './../views/FriendsLocations/FriendsLocations.vue';
@@ -121,6 +122,11 @@ const routes = [
                 path: 'username-checker',
                 name: 'username-checker',
                 component: UsernameChecker
+            },
+            {
+                path: 'group-monitor',
+                name: 'group-monitor',
+                component: GroupMonitor
             },
             {
                 path: 'tools/gallery',

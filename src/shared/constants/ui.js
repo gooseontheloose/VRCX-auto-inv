@@ -128,6 +128,13 @@ const navDefinitions = [
         routeName: 'username-checker'
     },
     {
+        key: 'group-monitor',
+        icon: 'ri-bar-chart-box-line',
+        tooltip: 'nav_tooltip.group_monitor',
+        labelKey: 'nav_tooltip.group_monitor',
+        routeName: 'group-monitor'
+    },
+    {
         key: 'direct-access',
         icon: 'ri-compass-3-line',
         tooltip: 'prompt.direct_access_omni.header',
