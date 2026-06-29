@@ -6,6 +6,7 @@ import FavoritesAvatar from './../views/Favorites/FavoritesAvatar.vue';
 import FavoritesFriend from './../views/Favorites/FavoritesFriend.vue';
 import FavoritesWorld from './../views/Favorites/FavoritesWorld.vue';
 import Feed from './../views/Feed/Feed.vue';
+import UsernameChecker from './../views/UsernameChecker/UsernameChecker.vue';
 import FriendList from './../views/FriendList/FriendList.vue';
 import FriendLog from './../views/FriendLog/FriendLog.vue';
 import FriendsLocations from './../views/FriendsLocations/FriendsLocations.vue';
@@ -116,6 +117,11 @@ const routes = [
                     import('./../views/Charts/components/HotWorlds.vue')
             },
             { path: 'tools', name: 'tools', component: Tools },
+            {
+                path: 'username-checker',
+                name: 'username-checker',
+                component: UsernameChecker
+            },
             {
                 path: 'tools/gallery',
                 name: 'gallery',

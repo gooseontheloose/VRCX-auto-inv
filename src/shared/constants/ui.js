@@ -121,6 +121,13 @@ const navDefinitions = [
         routeName: 'tools'
     },
     {
+        key: 'username-checker',
+        icon: 'ri-user-search-line',
+        tooltip: 'nav_tooltip.username_checker',
+        labelKey: 'nav_tooltip.username_checker',
+        routeName: 'username-checker'
+    },
+    {
         key: 'direct-access',
         icon: 'ri-compass-3-line',
         tooltip: 'prompt.direct_access_omni.header',
