@@ -35,6 +35,14 @@ export function createBaseDefaultNavLayout(t) {
         },
         { type: 'item', key: 'tools' },
         { type: 'item', key: 'username-checker' },
+        {
+            type: 'folder',
+            id: 'default-folder-group-monitor',
+            nameKey: 'nav_tooltip.group_monitor',
+            name: 'Group Control',
+            icon: 'ri-bar-chart-box-line',
+            items: ['group-monitor-overview', 'group-monitor-audit', 'group-monitor-members', 'group-monitor-crash', 'group-monitor-webhooks']
+        },
         { type: 'item', key: 'direct-access' }
     ];
 }

@@ -7,6 +7,11 @@ import FavoritesFriend from './../views/Favorites/FavoritesFriend.vue';
 import FavoritesWorld from './../views/Favorites/FavoritesWorld.vue';
 import Feed from './../views/Feed/Feed.vue';
 import UsernameChecker from './../views/UsernameChecker/UsernameChecker.vue';
+import GroupMonitor from './../views/GroupMonitor/GroupMonitor.vue';
+import GroupAuditLog from './../views/GroupMonitor/GroupAuditLog.vue';
+import GroupMembers from './../views/GroupMonitor/GroupMembers.vue';
+import GroupCrash from './../views/GroupMonitor/GroupCrash.vue';
+import GroupWebhooks from './../views/GroupMonitor/GroupWebhooks.vue';
 import FriendList from './../views/FriendList/FriendList.vue';
 import FriendLog from './../views/FriendLog/FriendLog.vue';
 import FriendsLocations from './../views/FriendsLocations/FriendsLocations.vue';
@@ -122,6 +127,12 @@ const routes = [
                 name: 'username-checker',
                 component: UsernameChecker
             },
+            { path: 'group-monitor', redirect: { name: 'group-monitor-overview' } },
+            { path: 'group-monitor/overview',  name: 'group-monitor-overview',  component: GroupMonitor },
+            { path: 'group-monitor/audit',     name: 'group-monitor-audit',     component: GroupAuditLog },
+            { path: 'group-monitor/members',   name: 'group-monitor-members',   component: GroupMembers },
+            { path: 'group-monitor/crash',     name: 'group-monitor-crash',     component: GroupCrash },
+            { path: 'group-monitor/webhooks',  name: 'group-monitor-webhooks',  component: GroupWebhooks },
             {
                 path: 'tools/gallery',
                 name: 'gallery',

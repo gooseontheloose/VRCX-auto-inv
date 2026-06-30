@@ -6,43 +6,45 @@ import { useModalStore } from '../stores';
 class SQLiteService {
     handleSQLiteError(e) {
         if (typeof e.message === 'string' && !window.isVrOverlay) {
-            const modalStore = useModalStore();
-            if (e.message.includes('database disk image is malformed')) {
-                modalStore
-                    .confirm({
+            try {
+                const modalStore = useModalStore();
+                if (e.message.includes('database disk image is malformed')) {
+                    modalStore
+                        .confirm({
+                            description:
+                                'Please repair or delete your database file by following these instructions.',
+                            title: 'Your database is corrupted'
+                        })
+                        .then(({ ok }) => {
+                            if (!ok) return;
+                            openExternalLink(
+                                'https://github.com/gooseontheloose/VRCX-auto-inv/wiki#how-to-repair-vrcx-database'
+                            );
+                        })
+                        .catch(() => { });
+                }
+                if (e.message.includes('database or disk is full')) {
+                    let desc = 'The disk containing your database is full. Please free up disk space.';
+                    try { desc = i18n.global.t('message.database.disk_space'); } catch { /* i18n not ready */ }
+                    modalStore.alert({ description: desc, title: 'Disk containing database is full' });
+                }
+                if (
+                    e.message.includes('database is locked') ||
+                    e.message.includes('attempt to write a readonly database')
+                ) {
+                    modalStore.alert({
                         description:
-                            'Please repair or delete your database file by following these instructions.',
-                        title: 'Your database is corrupted'
-                    })
-                    .then(({ ok }) => {
-                        if (!ok) return;
-                        openExternalLink(
-                            'https://github.com/gooseontheloose/VRCX-auto-inv/wiki#how-to-repair-vrcx-database'
-                        );
-                    })
-                    .catch(() => { });
-            }
-            if (e.message.includes('database or disk is full')) {
-                modalStore.alert({
-                    description: i18n.global.t('message.database.disk_space'),
-                    title: 'Disk containing database is full'
-                });
-            }
-            if (
-                e.message.includes('database is locked') ||
-                e.message.includes('attempt to write a readonly database')
-            ) {
-                modalStore.alert({
-                    description:
-                        'Please close other applications that might be using the database file.',
-                    title: 'Database is locked'
-                });
-            }
-            if (e.message.includes('disk I/O error')) {
-                modalStore.alert({
-                    description: i18n.global.t('message.database.disk_error'),
-                    title: 'Disk I/O error'
-                });
+                            'Please close other applications that might be using the database file.',
+                        title: 'Database is locked'
+                    });
+                }
+                if (e.message.includes('disk I/O error')) {
+                    let desc = 'A disk I/O error occurred while accessing the database.';
+                    try { desc = i18n.global.t('message.database.disk_error'); } catch { /* i18n not ready */ }
+                    modalStore.alert({ description: desc, title: 'Disk I/O error' });
+                }
+            } catch (innerErr) {
+                console.error('[SQLite] handleSQLiteError inner failure:', innerErr);
             }
         }
         throw e;
