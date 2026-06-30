@@ -128,11 +128,39 @@ const navDefinitions = [
         routeName: 'username-checker'
     },
     {
-        key: 'group-monitor',
+        key: 'group-monitor-overview',
         icon: 'ri-bar-chart-box-line',
         tooltip: 'nav_tooltip.group_monitor',
         labelKey: 'nav_tooltip.group_monitor',
-        routeName: 'group-monitor'
+        routeName: 'group-monitor-overview'
+    },
+    {
+        key: 'group-monitor-audit',
+        icon: 'ri-file-list-3-line',
+        tooltip: 'nav_tooltip.group_monitor_audit',
+        labelKey: 'nav_tooltip.group_monitor_audit',
+        routeName: 'group-monitor-audit'
+    },
+    {
+        key: 'group-monitor-members',
+        icon: 'ri-group-line',
+        tooltip: 'nav_tooltip.group_monitor_members',
+        labelKey: 'nav_tooltip.group_monitor_members',
+        routeName: 'group-monitor-members'
+    },
+    {
+        key: 'group-monitor-crash',
+        icon: 'ri-alarm-warning-line',
+        tooltip: 'nav_tooltip.group_monitor_crash',
+        labelKey: 'nav_tooltip.group_monitor_crash',
+        routeName: 'group-monitor-crash'
+    },
+    {
+        key: 'group-monitor-webhooks',
+        icon: 'ri-webhook-line',
+        tooltip: 'nav_tooltip.group_monitor_webhooks',
+        labelKey: 'nav_tooltip.group_monitor_webhooks',
+        routeName: 'group-monitor-webhooks'
     },
     {
         key: 'direct-access',
