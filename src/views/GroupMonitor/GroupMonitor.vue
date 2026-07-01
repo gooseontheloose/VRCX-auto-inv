@@ -107,14 +107,34 @@
         openProfileByName,
         startPolling,
         stopPolling,
+        webhookConfigs,
+        webhookSendingIds,
+        webhookStatus,
+        webhookLastSent,
+        initWebhooks,
+        saveWebhookConfigs,
+        saveWebhookLastSent,
+        groupAuditPermIds,
+        groupsWithCachedData,
+        groupPermCheckDone,
+        updateGroupAuditPerms,
+        isGroupPermLost,
     } = useGroupMonitorData();
 
     const groupStore = useGroupStore();
     const _route = useRoute();
 
     // ── group selector ───────────────────────────────────────────────────────
-    const groups = computed(() => Array.from(groupStore.currentUserGroups.values()));
-    const selectedGroup = computed(() => groups.value.find((g) => g.id === selectedGroupId.value) ?? null);
+    const allGroups = computed(() => Array.from(groupStore.currentUserGroups.values()));
+    watch(allGroups, (gs) => { if (gs.length) updateGroupAuditPerms(gs); }, { immediate: true });
+    const auditCapableGroups = computed(() => {
+        const all = allGroups.value;
+        if (!groupPermCheckDone.value || (!groupAuditPermIds.value.size && !groupsWithCachedData.value.size)) return all;
+        const f = all.filter((g) => groupAuditPermIds.value.has(g.id) || groupsWithCachedData.value.has(g.id));
+        return f.length > 0 ? f : all;
+    });
+    const groups = auditCapableGroups;
+    const selectedGroup = computed(() => allGroups.value.find((g) => g.id === selectedGroupId.value) ?? null);
 
     // ── route → tab mapping ───────────────────────────────────────────────────
     const ROUTE_TAB_MAP = {
@@ -146,17 +166,20 @@
     const sortKickDir = ref('desc');
     const sortKickedCol = ref('count');
     const sortKickedDir = ref('desc');
-    const kickView = ref('kickers'); // 'kickers' | 'kicked'
+    const kickView = ref('kickers'); // 'kickers' | 'kicked' | 'logs'
     const sortBanCol = ref('count');
     const sortBanDir = ref('desc');
     const sortBannedCol = ref('count');
     const sortBannedDir = ref('desc');
-    const banView = ref('banners'); // 'banners' | 'banned'
+    const banView = ref('banners'); // 'banners' | 'banned' | 'logs'
     const sortWarnCol = ref('count');
     const sortWarnDir = ref('desc');
     const sortWarnedCol = ref('count');
     const sortWarnedDir = ref('desc');
-    const warnView = ref('warners'); // 'warners' | 'warned'
+    const warnView = ref('warners'); // 'warners' | 'warned' | 'logs'
+    const kickLogSearch = ref('');
+    const banLogSearch  = ref('');
+    const warnLogSearch = ref('');
 
     // vote-to-kick state
     const vkSearch = ref('');
@@ -178,7 +201,6 @@
     const auditPageSizeDisplay = ref(25);
 
     // group vk log state
-    const vkLogSearch = ref('');
 
     // ── chart refs ────────────────────────────────────────────────────────────
     const membersChartRef = ref(null);
@@ -549,6 +571,35 @@
         return sortRows(Array.from(map.values()), sortWarnedCol.value, sortWarnedDir.value);
     });
 
+    // ── event logs (kicks / bans / warns) ────────────────────────────────────
+    function makeEventLog(eventType, searchRef) {
+        return computed(() => {
+            const cutoff = cutoffDate(auditDateDays.value);
+            const search = searchRef.value.toLowerCase().trim();
+            return auditLogs.value
+                .filter((r) => r.eventType === eventType && (!cutoff || r.created_at >= cutoff))
+                .map((r) => {
+                    const actorName = r.actorDisplayName
+                        || (r.actorId && resolvedUserNames.value[r.actorId])
+                        || parseActorFromDescription(r.description)
+                        || '—';
+                    const targetName = r.targetDisplayName
+                        || (r.targetId && resolvedUserNames.value[r.targetId])
+                        || parseTargetFromDescription(r.description)
+                        || '—';
+                    return { ...r, actorName, targetName };
+                })
+                .filter((r) => {
+                    if (!search) return true;
+                    return r.actorName.toLowerCase().includes(search) || r.targetName.toLowerCase().includes(search);
+                })
+                .sort((a, b) => b.created_at.localeCompare(a.created_at));
+        });
+    }
+    const kickLog  = makeEventLog('group.instance.kick', kickLogSearch);
+    const banLog   = makeEventLog('group.user.ban',      banLogSearch);
+    const warnLog  = makeEventLog('group.instance.warn', warnLogSearch);
+
     // ── vote-to-kick ──────────────────────────────────────────────────────────
     const groupVkEvents = computed(() => {
         if (!locationHistory.value.length || !vkEvents.value.length) return [];
@@ -631,7 +682,7 @@
     });
 
     const groupVkLogs = computed(() => {
-        const q = vkLogSearch.value.toLowerCase().trim();
+        const q = vkSearch.value.toLowerCase().trim();
         const evs = groupVkEvents.value;
         const filtered = q
             ? evs.filter((e) => e.target.toLowerCase().includes(q) || (e.initiator || '').toLowerCase().includes(q))
@@ -798,7 +849,8 @@
     watch([crashThreshold, crashWindowSec], () => renderCrashChart());
 
     // ── webhook service ───────────────────────────────────────────────────────
-    const WEBHOOK_STORAGE_KEY = 'gm-webhooks-v1';
+    // webhookConfigs / webhookSendingIds / webhookStatus / webhookLastSent
+    // are module-level singletons from useGroupMonitorData (SQLite-backed).
     const WEBHOOK_TYPE_LABELS = {
         'kick-board': 'Top Kickers',
         'most-kicked': 'Most Kicked',
@@ -807,20 +859,10 @@
         'snitch-report': 'Top Snitches',
         'vk-targets': 'Most Vote-Kicked',
         'crash-alert': 'Crash Alerts',
-        'invite-board': 'Top Inviters'
+        'invite-board': 'Top Inviters',
+        'warn-board': 'Top Warners',
+        'most-warned': 'Most Warned'
     };
-
-    function loadWebhookConfigs() {
-        try { const raw = localStorage.getItem(WEBHOOK_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; }
-    }
-    function saveWebhookConfigsFn(configs) {
-        try { localStorage.setItem(WEBHOOK_STORAGE_KEY, JSON.stringify(configs)); } catch { /* quota */ }
-    }
-
-    const webhookConfigs = ref(loadWebhookConfigs());
-    const webhookSendingIds = ref(new Set());
-    const webhookStatus = ref({});
-    const webhookLastSent = ref(JSON.parse(localStorage.getItem('gm-webhook-lastsent') ?? '{}'));
     const webhookNewUrl = ref('');
     const webhookNewName = ref('');
     const webhookNewType = ref('kick-board');
@@ -880,10 +922,6 @@
         if (crashMonitorInterval) { clearInterval(crashMonitorInterval); crashMonitorInterval = null; }
     }
 
-    function saveLastSent() {
-        try { localStorage.setItem('gm-webhook-lastsent', JSON.stringify(webhookLastSent.value)); } catch { /* quota */ }
-    }
-
     async function webhookScheduler() {
         const now = Date.now();
         for (const wh of webhookConfigs.value) {
@@ -893,7 +931,7 @@
             const fn = getPayloadFn(wh.type, wh.id);
             if (!fn) continue;
             webhookLastSent.value = { ...webhookLastSent.value, [wh.id]: now };
-            saveLastSent();
+            saveWebhookLastSent();
             await sendWebhook(wh.id, fn).catch(() => { });
         }
     }
@@ -917,7 +955,7 @@
             color: webhookNewColor.value || '#5865f2',
             enabled: true, intervalMinutes: Number(webhookNewInterval.value) || 0
         }];
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
         webhookNewUrl.value = '';
         webhookNewName.value = '';
         webhookNewInterval.value = 0;
@@ -927,19 +965,19 @@
         webhookConfigs.value = webhookConfigs.value.map((w) =>
             w.id === id ? { ...w, intervalMinutes: Number(minutes) || 0 } : w
         );
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
     }
 
     function updateWebhookColor(id, color) {
         webhookConfigs.value = webhookConfigs.value.map((w) =>
             w.id === id ? { ...w, color } : w
         );
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
     }
 
     function removeWebhook(id) {
         webhookConfigs.value = webhookConfigs.value.filter((w) => w.id !== id);
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
         const s = { ...webhookStatus.value };
         delete s[id];
         webhookStatus.value = s;
@@ -947,7 +985,7 @@
 
     function toggleWebhook(id) {
         webhookConfigs.value = webhookConfigs.value.map((w) => w.id === id ? { ...w, enabled: !w.enabled } : w);
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
     }
 
     async function doFetchWebhook(url, payload) {
@@ -991,6 +1029,12 @@
             rows = inviteLeaderboard.value;
             nameFn = (r) => r.actor;
             countFn = (r) => `${r.invites} invites · ${r.converts} joined · ${r.rate}%`;
+        } else if (type === 'warn-board') {
+            title = 'Top Warners'; subtitle = 'Who has issued the most instance warnings to players.';
+            rows = warnLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
+        } else if (type === 'most-warned') {
+            title = 'Most Warned'; subtitle = 'Who has received the most instance warnings.';
+            rows = warnedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
         } else { return null; }
         const lines = rows.slice(0, 25).map((r, i) => `${i + 1}. ${nameFn(r)} — ${countFn(r)}`);
         const description = `*${subtitle}*\n\n${lines.join('\n') || 'No data yet.'}`;
@@ -1028,7 +1072,7 @@
     }
 
     function getPayloadFn(type, configId) {
-        const leaderboardTypes = ['kick-board', 'most-kicked', 'ban-board', 'most-banned', 'snitch-report', 'vk-targets', 'invite-board'];
+        const leaderboardTypes = ['kick-board', 'most-kicked', 'ban-board', 'most-banned', 'snitch-report', 'vk-targets', 'invite-board', 'warn-board', 'most-warned'];
         if (leaderboardTypes.includes(type)) return () => buildLeaderboardPayload(type, configId);
         return null;
     }
@@ -1040,11 +1084,12 @@
     }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
-    onMounted(() => {
+    onMounted(async () => {
+        await initWebhooks();
         loadVoteKickHistory();
         window.addEventListener('resize', onResize);
         const _savedGroupId = localStorage.getItem('gm-group-id');
-        const _startGroupId = (_savedGroupId && groups.value.some((g) => g.id === _savedGroupId)) ? _savedGroupId : groups.value[0]?.id;
+        const _startGroupId = (_savedGroupId && allGroups.value.some((g) => g.id === _savedGroupId)) ? _savedGroupId : allGroups.value[0]?.id;
         // Only fetch if data isn't already loaded from another GroupMonitor page this session
         if (_startGroupId && _startGroupId !== selectedGroupId.value) handleGroupChange(_startGroupId);
         startPolling();
@@ -1092,7 +1137,9 @@
                         <SelectValue placeholder="Select a group…" />
                     </SelectTrigger>
                     <SelectContent>
-                        <SelectItem v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</SelectItem>
+                        <SelectItem v-for="g in groups" :key="g.id" :value="g.id">
+                            {{ g.name }}<template v-if="isGroupPermLost(g.id)"> <span class="text-xs opacity-60">(cached – no access)</span></template>
+                        </SelectItem>
                         <div v-if="groups.length === 0" class="px-3 py-2 text-sm text-muted-foreground">No groups found</div>
                     </SelectContent>
                 </Select>
@@ -1156,27 +1203,23 @@
 
                 <!-- ══ BAN BOARD ══ -->
                 <TabsContent value="bans" class="space-y-3">
-                    <div class="flex items-center justify-between flex-wrap gap-2">
-                        <div>
-                            <p class="text-sm font-medium">Ban Board</p>
-                            <p class="text-xs text-muted-foreground">Based on group audit log ban events — tracks who issues the most bans and who gets banned the most.</p>
+                    <div class="flex items-center justify-between gap-2 flex-wrap">
+                        <div class="flex gap-1 border rounded-lg p-1">
+                            <button v-for="tab in [{ v: 'banners', icon: Shield, label: 'Top Banners' }, { v: 'banned', icon: UserX, label: 'Most Banned' }, { v: 'logs', icon: ScrollText, label: 'Ban Log' }]"
+                                :key="tab.v"
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                                :class="banView === tab.v ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'"
+                                @click="banView = tab.v">
+                                <component :is="tab.icon" class="size-3.5" />{{ tab.label }}
+                            </button>
                         </div>
-                        <div class="flex gap-2">
-                            <Button variant="outline" size="sm" class="h-8" @click="exportCsv(banView === 'banners' ? banLeaderboard : bannedLeaderboard, banView === 'banners' ? 'top-banners.csv' : 'most-banned.csv')">
-                                <Download class="size-3.5 mr-1" />Export
-                            </Button>
-                        </div>
+                        <Button variant="outline" size="sm" class="h-8" @click="exportCsv(banView === 'banners' ? banLeaderboard : banView === 'banned' ? bannedLeaderboard : banLog, banView === 'banners' ? 'top-banners.csv' : banView === 'banned' ? 'most-banned.csv' : 'ban-log.csv')">
+                            <Download class="size-3.5 mr-1" />Export
+                        </Button>
                     </div>
-
-                    <!-- view switcher -->
-                    <div class="flex gap-1 border rounded-lg p-1 w-fit">
-                        <button v-for="tab in [{ v: 'banners', icon: Shield, label: 'Top Banners' }, { v: 'banned', icon: UserX, label: 'Most Banned' }]"
-                            :key="tab.v"
-                            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-                            :class="banView === tab.v ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'"
-                            @click="banView = tab.v">
-                            <component :is="tab.icon" class="size-3.5" />{{ tab.label }}
-                        </button>
+                    <div v-if="banView === 'logs'" class="relative">
+                        <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                        <Input v-model="banLogSearch" placeholder="Filter by moderator or player…" class="pl-8 h-8 text-sm" />
                     </div>
 
                     <!-- TOP BANNERS -->
@@ -1274,31 +1317,59 @@
                             </tbody>
                         </table>
                     </div>
+                    <!-- BAN LOG -->
+                    <div v-if="banView === 'logs'" class="rounded-lg border overflow-hidden">
+                            <table class="w-full text-sm">
+                                <thead class="bg-muted/40 border-b">
+                                    <tr>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap">Time</th>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Moderator</th>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Player Banned</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-if="banLog.length === 0"><td colspan="3" class="text-center py-10 text-muted-foreground text-sm">No ban events in the loaded audit log.</td></tr>
+                                    <tr v-for="(r, i) in banLog" :key="i" class="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                                        <td class="px-3 py-2 text-xs text-muted-foreground tabular-nums whitespace-nowrap">{{ fmtDate(r.created_at) }}</td>
+                                        <td class="px-3 py-2 font-medium">
+                                            <button v-if="r.actorId" class="hover:underline cursor-pointer text-left" @click="openProfileById(r.actorId)">{{ r.actorName }}</button>
+                                            <span v-else>{{ r.actorName }}</span>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <Badge variant="destructive" class="text-xs mr-2">Banned</Badge>
+                                            <button v-if="r.targetId" class="hover:underline cursor-pointer text-left font-medium" @click="openProfileById(r.targetId)">
+                                                {{ r.targetName }}<ExternalLink class="size-3 inline ml-1 opacity-40" />
+                                            </button>
+                                            <button v-else-if="r.targetName !== '—'" class="hover:underline cursor-pointer text-left font-medium" @click="openProfileByName(r.targetName)">
+                                                {{ r.targetName }}<ExternalLink class="size-3 inline ml-1 opacity-40" />
+                                            </button>
+                                            <span v-else>—</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                    </div>
                 </TabsContent>
 
                 <!-- ══ INSTANCE WARNS ══ -->
                 <TabsContent value="warns" class="space-y-3">
-                    <div class="flex items-center justify-between flex-wrap gap-2">
-                        <div>
-                            <p class="text-sm font-medium">Instance Warns</p>
-                            <p class="text-xs text-muted-foreground">Based on group audit log warn events — tracks who issues the most warnings and who gets warned the most.</p>
+                    <div class="flex items-center justify-between gap-2 flex-wrap">
+                        <div class="flex gap-1 border rounded-lg p-1">
+                            <button v-for="tab in [{ v: 'warners', icon: AlertTriangle, label: 'Most Warns Given' }, { v: 'warned', icon: UserX, label: 'Most Warned' }, { v: 'logs', icon: ScrollText, label: 'Warn Log' }]"
+                                :key="tab.v"
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                                :class="warnView === tab.v ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'"
+                                @click="warnView = tab.v">
+                                <component :is="tab.icon" class="size-3.5" />{{ tab.label }}
+                            </button>
                         </div>
-                        <div class="flex gap-2">
-                            <Button variant="outline" size="sm" class="h-8" @click="exportCsv(warnView === 'warners' ? warnLeaderboard : warnedLeaderboard, warnView === 'warners' ? 'top-warners.csv' : 'most-warned.csv')">
-                                <Download class="size-3.5 mr-1" />Export
-                            </Button>
-                        </div>
+                        <Button variant="outline" size="sm" class="h-8" @click="exportCsv(warnView === 'warners' ? warnLeaderboard : warnView === 'warned' ? warnedLeaderboard : warnLog, warnView === 'warners' ? 'top-warners.csv' : warnView === 'warned' ? 'most-warned.csv' : 'warn-log.csv')">
+                            <Download class="size-3.5 mr-1" />Export
+                        </Button>
                     </div>
-
-                    <!-- view switcher -->
-                    <div class="flex gap-1 border rounded-lg p-1 w-fit">
-                        <button v-for="tab in [{ v: 'warners', icon: AlertTriangle, label: 'Most Warns Given' }, { v: 'warned', icon: UserX, label: 'Most Warned' }]"
-                            :key="tab.v"
-                            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-                            :class="warnView === tab.v ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'"
-                            @click="warnView = tab.v">
-                            <component :is="tab.icon" class="size-3.5" />{{ tab.label }}
-                        </button>
+                    <div v-if="warnView === 'logs'" class="relative">
+                        <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                        <Input v-model="warnLogSearch" placeholder="Filter by moderator or player…" class="pl-8 h-8 text-sm" />
                     </div>
 
                     <!-- TOP WARNERS -->
@@ -1396,31 +1467,59 @@
                             </tbody>
                         </table>
                     </div>
+                    <!-- WARN LOG -->
+                    <div v-if="warnView === 'logs'" class="rounded-lg border overflow-hidden">
+                            <table class="w-full text-sm">
+                                <thead class="bg-muted/40 border-b">
+                                    <tr>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap">Time</th>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Moderator</th>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Player Warned</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-if="warnLog.length === 0"><td colspan="3" class="text-center py-10 text-muted-foreground text-sm">No warn events in the loaded audit log.</td></tr>
+                                    <tr v-for="(r, i) in warnLog" :key="i" class="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                                        <td class="px-3 py-2 text-xs text-muted-foreground tabular-nums whitespace-nowrap">{{ fmtDate(r.created_at) }}</td>
+                                        <td class="px-3 py-2 font-medium">
+                                            <button v-if="r.actorId" class="hover:underline cursor-pointer text-left" @click="openProfileById(r.actorId)">{{ r.actorName }}</button>
+                                            <span v-else>{{ r.actorName }}</span>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <Badge class="text-xs mr-2 bg-yellow-500/20 text-yellow-600 border-yellow-500/30">Warned</Badge>
+                                            <button v-if="r.targetId" class="hover:underline cursor-pointer text-left font-medium" @click="openProfileById(r.targetId)">
+                                                {{ r.targetName }}<ExternalLink class="size-3 inline ml-1 opacity-40" />
+                                            </button>
+                                            <button v-else-if="r.targetName !== '—'" class="hover:underline cursor-pointer text-left font-medium" @click="openProfileByName(r.targetName)">
+                                                {{ r.targetName }}<ExternalLink class="size-3 inline ml-1 opacity-40" />
+                                            </button>
+                                            <span v-else>—</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                    </div>
                 </TabsContent>
 
                 <!-- ══ INSTANCE KICK BOARD ══ -->
                 <TabsContent value="kicks" class="space-y-3">
-                    <div class="flex items-center justify-between flex-wrap gap-2">
-                        <div>
-                            <p class="text-sm font-medium">Instance Kick Board</p>
-                            <p class="text-xs text-muted-foreground">Based on group audit log member removals — tracks who kicks and who gets kicked.</p>
+                    <div class="flex items-center justify-between gap-2 flex-wrap">
+                        <div class="flex gap-1 border rounded-lg p-1">
+                            <button v-for="tab in [{ v: 'kickers', icon: Shield, label: 'Top Kickers' }, { v: 'kicked', icon: UserX, label: 'Most Kicked' }, { v: 'logs', icon: ScrollText, label: 'Kick Log' }]"
+                                :key="tab.v"
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                                :class="kickView === tab.v ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'"
+                                @click="kickView = tab.v">
+                                <component :is="tab.icon" class="size-3.5" />{{ tab.label }}
+                            </button>
                         </div>
-                        <div class="flex gap-2">
-                            <Button variant="outline" size="sm" class="h-8" @click="exportCsv(kickView === 'kickers' ? kickLeaderboard : kickedLeaderboard, kickView === 'kickers' ? 'top-kickers.csv' : 'most-kicked.csv')">
-                                <Download class="size-3.5 mr-1" />Export
-                            </Button>
-                        </div>
+                        <Button variant="outline" size="sm" class="h-8" @click="exportCsv(kickView === 'kickers' ? kickLeaderboard : kickView === 'kicked' ? kickedLeaderboard : kickLog, kickView === 'kickers' ? 'top-kickers.csv' : kickView === 'kicked' ? 'most-kicked.csv' : 'kick-log.csv')">
+                            <Download class="size-3.5 mr-1" />Export
+                        </Button>
                     </div>
-
-                    <!-- view switcher -->
-                    <div class="flex gap-1 border rounded-lg p-1 w-fit">
-                        <button v-for="tab in [{ v: 'kickers', icon: Shield, label: 'Top Kickers' }, { v: 'kicked', icon: UserX, label: 'Most Kicked' }]"
-                            :key="tab.v"
-                            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-                            :class="kickView === tab.v ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'"
-                            @click="kickView = tab.v">
-                            <component :is="tab.icon" class="size-3.5" />{{ tab.label }}
-                        </button>
+                    <div v-if="kickView === 'logs'" class="relative">
+                        <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                        <Input v-model="kickLogSearch" placeholder="Filter by moderator or player…" class="pl-8 h-8 text-sm" />
                     </div>
 
                     <!-- TOP KICKERS -->
@@ -1517,6 +1616,38 @@
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    <!-- KICK LOG -->
+                    <div v-if="kickView === 'logs'" class="rounded-lg border overflow-hidden">
+                            <table class="w-full text-sm">
+                                <thead class="bg-muted/40 border-b">
+                                    <tr>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap">Time</th>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Moderator</th>
+                                        <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Player Kicked</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-if="kickLog.length === 0"><td colspan="3" class="text-center py-10 text-muted-foreground text-sm">No kick events in the loaded audit log.</td></tr>
+                                    <tr v-for="(r, i) in kickLog" :key="i" class="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                                        <td class="px-3 py-2 text-xs text-muted-foreground tabular-nums whitespace-nowrap">{{ fmtDate(r.created_at) }}</td>
+                                        <td class="px-3 py-2 font-medium">
+                                            <button v-if="r.actorId" class="hover:underline cursor-pointer text-left" @click="openProfileById(r.actorId)">{{ r.actorName }}</button>
+                                            <span v-else>{{ r.actorName }}</span>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <Badge variant="outline" class="text-xs mr-2">Kicked</Badge>
+                                            <button v-if="r.targetId" class="hover:underline cursor-pointer text-left font-medium" @click="openProfileById(r.targetId)">
+                                                {{ r.targetName }}<ExternalLink class="size-3 inline ml-1 opacity-40" />
+                                            </button>
+                                            <button v-else-if="r.targetName !== '—'" class="hover:underline cursor-pointer text-left font-medium" @click="openProfileByName(r.targetName)">
+                                                {{ r.targetName }}<ExternalLink class="size-3 inline ml-1 opacity-40" />
+                                            </button>
+                                            <span v-else>—</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
                     </div>
                 </TabsContent>
 
@@ -1745,19 +1876,10 @@
 
                     <!-- VK LOGS -->
                     <div v-if="vkView === 'logs'" class="space-y-3">
-                        <div class="flex items-center justify-between flex-wrap gap-2">
-                            <p class="text-sm text-muted-foreground">
-                                Vote-to-kick events that happened while you were inside this group's instances.
-                                <span class="font-medium text-foreground">{{ groupVkLogs.length }}</span> events found.
-                            </p>
-                            <Button variant="outline" size="sm" @click="exportCsv(groupVkLogs, 'group-vk-log.csv')">
-                                <Download class="size-3.5 mr-1" />Export
-                            </Button>
-                        </div>
-                        <div class="relative">
-                            <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                            <Input v-model="vkLogSearch" placeholder="Filter by target or initiator name…" class="pl-8 h-8 text-sm" />
-                        </div>
+                        <p class="text-xs text-muted-foreground">
+                            Vote-to-kick events while you were in this group's instances.
+                            <span class="font-medium text-foreground">{{ groupVkLogs.length }}</span> events — filtered by the search above.
+                        </p>
                         <div class="rounded-lg border overflow-hidden">
                             <table class="w-full text-sm">
                                 <thead class="bg-muted/40 border-b">

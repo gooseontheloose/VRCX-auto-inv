@@ -163,6 +163,13 @@ const navDefinitions = [
         routeName: 'group-monitor-webhooks'
     },
     {
+        key: 'debug-logs',
+        icon: 'ri-bug-line',
+        tooltip: 'nav_tooltip.debug_logs',
+        labelKey: 'nav_tooltip.debug_logs',
+        routeName: 'debug-logs'
+    },
+    {
         key: 'direct-access',
         icon: 'ri-compass-3-line',
         tooltip: 'prompt.direct_access_omni.header',
