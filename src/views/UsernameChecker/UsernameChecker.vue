@@ -26,6 +26,7 @@
     } from 'lucide-vue-next';
 
     import { request } from '../../services/request';
+    import { useUserStore } from '@/stores/user';
     import { Button } from '@/components/ui/button';
     import { Badge } from '@/components/ui/badge';
     import { Input } from '@/components/ui/input';
@@ -45,6 +46,7 @@
     } from '@/components/ui/select';
 
     const { t } = useI18n();
+    const userStore = useUserStore();
 
     // ── constants ────────────────────────────────────────────────────────────
     const STORAGE_KEY = 'paw_username_checker_log';
@@ -80,12 +82,8 @@
     const log = ref([]);
 
     // ── speed + check settings ────────────────────────────────────────────────
-    const SPEED_PRESETS = [
-        { label: 'Careful', ms: 1100, rate: '~55/min' },
-        { label: 'Normal',  ms: 600,  rate: '~100/min' }
-    ];
-    const speedPreset = ref(0);         // 0 = Careful, 1 = Normal
-    const doubleCheckMode = ref(false); // verify "taken" via profile lookup
+    const DELAY_MS = 1100; // ~55/min — only speed, avoids rate limiting
+    const doubleCheckMode = ref(false); // verify results via profile/cache lookup
     const rateLimitHit = ref(false);    // auto-set when API returns 429
 
     // ── UI state ─────────────────────────────────────────────────────────────
@@ -148,8 +146,6 @@
     });
 
     const availableNames = computed(() => log.value.filter((e) => e.status === 'available').map((e) => e.name));
-
-    const currentSpeed = computed(() => SPEED_PRESETS[speedPreset.value] ?? SPEED_PRESETS[0]);
 
     const dictFiltered = computed(() => {
         const min = Math.max(VRC_MIN_LEN, dictMinLen.value);
@@ -277,12 +273,39 @@
                 method: 'GET',
                 params: { search: name, n: 1, fuzzy: false }
             });
-            if (!Array.isArray(result) || result.length === 0) return { status: 'available' };
-            const exact = result.find((u) => u.displayName?.toLowerCase() === name.toLowerCase());
-            if (!exact) return { status: 'available' };
+            const exact = Array.isArray(result)
+                ? result.find((u) => u.displayName?.toLowerCase() === name.toLowerCase())
+                : null;
 
-            // Double-check: fetch the matched user's profile to confirm the account is real.
-            // The search endpoint sometimes returns ghost/deleted accounts causing false "taken".
+            if (!exact) {
+                // Search returned nothing — looks available.
+                // With double-check: scan VRCX's local user cache for this display name.
+                // Banned accounts disappear from search but their cached ID lets us confirm
+                // via direct profile lookup whether the name is still held.
+                if (doubleCheckMode.value) {
+                    const cachedIds = userStore.cachedUserIdsByDisplayName.get(name)
+                        ?? userStore.cachedUserIdsByDisplayName.get(name.toLowerCase());
+                    if (cachedIds?.size) {
+                        for (const userId of cachedIds) {
+                            try {
+                                const profile = await request(`users/${userId}`, { method: 'GET' });
+                                if (profile?.displayName?.toLowerCase() === name.toLowerCase()) {
+                                    // Account exists but hidden from search (likely banned)
+                                    return { status: 'taken', verified: true };
+                                }
+                            } catch (err) {
+                                if (is429(err)) return { status: 'error', rateLimited: true };
+                                // 404 or error → account gone, name is free
+                            }
+                        }
+                    }
+                    return { status: 'available', verified: true };
+                }
+                return { status: 'available' };
+            }
+
+            // Search returned an exact match — likely taken.
+            // Double-check: fetch profile to confirm the account is real (not a ghost/deleted entry).
             if (doubleCheckMode.value && exact.id) {
                 try {
                     const profile = await request(`users/${exact.id}`, { method: 'GET' });
@@ -290,7 +313,6 @@
                     return { status: stillMatch ? 'taken' : 'available', verified: true };
                 } catch (err) {
                     if (is429(err)) return { status: 'error', rateLimited: true };
-                    // Profile 404 or other error → account doesn't really exist, name is free
                     return { status: 'available', verified: true };
                 }
             }
@@ -328,7 +350,7 @@
             log.value.unshift({ name, status, checkedAt: new Date(), verified: verified ?? false });
             checkedCount.value++;
             if (checkedCount.value < names.length && !stopRequested.value) {
-                await sleep(currentSpeed.value.ms);
+                await sleep(DELAY_MS);
             }
         }
 
@@ -684,32 +706,12 @@
                     </TabsContent>
                 </Tabs>
 
-                <!-- Speed + double-check controls -->
+                <!-- Double-check controls -->
                 <div style="border-top:1px solid hsl(var(--border));padding:10px 12px;flex-shrink:0;display:flex;flex-direction:column;gap:10px;">
-
-                    <!-- Speed toggle -->
-                    <div style="display:flex;flex-direction:column;gap:5px;">
-                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Speed</label>
-                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-                            <Button
-                                v-for="(preset, i) in SPEED_PRESETS"
-                                :key="preset.label"
-                                :variant="speedPreset === i ? 'default' : 'outline'"
-                                size="sm"
-                                :disabled="isChecking"
-                                style="flex-direction:column;height:auto;padding:5px 4px;gap:1px;"
-                                @click="speedPreset = i">
-                                <span style="font-size:12px;font-weight:600;">{{ preset.label }}</span>
-                                <span style="font-size:10px;opacity:0.75;">{{ preset.rate }}</span>
-                            </Button>
-                        </div>
-                    </div>
-
-                    <!-- Double-check toggle -->
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
                         <div>
-                            <div style="font-size:12px;font-weight:500;">Double-check taken</div>
-                            <div style="font-size:10px;" class="text-muted-foreground">Verify "taken" via profile lookup to fix false positives</div>
+                            <div style="font-size:12px;font-weight:500;">Double-check results</div>
+                            <div style="font-size:10px;" class="text-muted-foreground">Verifies "available" via cache lookup (catches banned accounts) and confirms "taken" via profile API</div>
                         </div>
                         <button
                             @click="doubleCheckMode = !doubleCheckMode"
@@ -721,6 +723,7 @@
                                 :style="{ left: doubleCheckMode ? '18px' : '2px' }" />
                         </button>
                     </div>
+                    <div style="font-size:10px;" class="text-muted-foreground">Speed: ~55/min (rate-limit safe)</div>
                 </div>
             </div>
 
