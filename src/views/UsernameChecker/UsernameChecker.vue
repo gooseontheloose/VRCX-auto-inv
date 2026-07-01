@@ -271,7 +271,7 @@
         try {
             const result = await request('users', {
                 method: 'GET',
-                params: { search: name, n: 1, fuzzy: false }
+                params: { search: name, n: 10, fuzzy: false }
             });
             const exact = Array.isArray(result)
                 ? result.find((u) => u.displayName?.toLowerCase() === name.toLowerCase())
