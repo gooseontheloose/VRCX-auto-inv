@@ -26,6 +26,7 @@
     } from 'lucide-vue-next';
 
     import { request } from '../../services/request';
+    import { openExternalLink } from '@/shared/utils/common';
     import { useUserStore } from '@/stores/user';
     import { Button } from '@/components/ui/button';
     import { Badge } from '@/components/ui/badge';
@@ -267,6 +268,16 @@
         return err?.status === 429 || String(err?.message ?? '').includes('429');
     }
 
+    const TRUST_TAGS = ['system_trust_basic', 'system_trust_known', 'system_trust_trusted', 'system_trust_veteran'];
+
+    function profileMeta(profile) {
+        const tags = profile?.tags ?? [];
+        return {
+            userId: profile?.id ?? null,
+            isOldVisitor: !TRUST_TAGS.some((t) => tags.includes(t))
+        };
+    }
+
     async function isNameAvailable(name) {
         try {
             const result = await request('users', {
@@ -290,8 +301,7 @@
                             try {
                                 const profile = await request(`users/${userId}`, { method: 'GET' });
                                 if (profile?.displayName?.toLowerCase() === name.toLowerCase()) {
-                                    // Account exists but hidden from search (likely banned)
-                                    return { status: 'taken', verified: true };
+                                    return { status: 'taken', verified: true, ...profileMeta(profile) };
                                 }
                             } catch (err) {
                                 if (is429(err)) return { status: 'error', rateLimited: true };
@@ -310,14 +320,15 @@
                 try {
                     const profile = await request(`users/${exact.id}`, { method: 'GET' });
                     const stillMatch = profile?.displayName?.toLowerCase() === name.toLowerCase();
-                    return { status: stillMatch ? 'taken' : 'available', verified: true };
+                    if (stillMatch) return { status: 'taken', verified: true, ...profileMeta(profile) };
+                    return { status: 'available', verified: true };
                 } catch (err) {
                     if (is429(err)) return { status: 'error', rateLimited: true };
                     return { status: 'available', verified: true };
                 }
             }
 
-            return { status: 'taken' };
+            return { status: 'taken', userId: exact.id ?? null };
         } catch (err) {
             if (is429(err)) return { status: 'error', rateLimited: true };
             return { status: 'error' };
@@ -339,7 +350,7 @@
         for (const name of names) {
             if (stopRequested.value) break;
             currentName.value = name;
-            const { status, verified, rateLimited } = await isNameAvailable(name);
+            const { status, verified, rateLimited, userId, isOldVisitor } = await isNameAvailable(name);
 
             if (rateLimited) {
                 rateLimitHit.value = true;
@@ -347,7 +358,7 @@
                 break;
             }
 
-            log.value.unshift({ name, status, checkedAt: new Date(), verified: verified ?? false });
+            log.value.unshift({ name, status, checkedAt: new Date(), verified: verified ?? false, userId: userId ?? null, isOldVisitor: isOldVisitor ?? false });
             checkedCount.value++;
             if (checkedCount.value < names.length && !stopRequested.value) {
                 await sleep(DELAY_MS);
@@ -864,10 +875,27 @@
 
                         <!-- Name + copy button (together, left side) -->
                         <div style="display:flex;align-items:center;gap:4px;min-width:0;">
-                            <span
-                                style="font-family:monospace;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                                :style="{ color: entry.status === 'available' ? '#22c55e' : entry.status === 'taken' ? 'hsl(var(--muted-foreground))' : 'hsl(var(--muted-foreground))' }">
+                            <!-- Taken names link to VRChat profile (useful for reporting inactive accounts) -->
+                            <a
+                                v-if="entry.status === 'taken' && entry.userId"
+                                href="#"
+                                style="font-family:monospace;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:hsl(var(--muted-foreground));text-decoration:none;"
+                                @click.prevent="openExternalLink('https://vrchat.com/home/user/' + entry.userId)"
+                                title="Open VRChat profile">
                                 {{ entry.name }}
+                            </a>
+                            <span
+                                v-else
+                                style="font-family:monospace;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                :style="{ color: entry.status === 'available' ? '#22c55e' : 'hsl(var(--muted-foreground))' }">
+                                {{ entry.name }}
+                            </span>
+                            <!-- Old visitor tag -->
+                            <span
+                                v-if="entry.status === 'taken' && entry.isOldVisitor"
+                                style="font-size:9px;padding:1px 4px;border-radius:3px;background:#6b728022;color:#9ca3af;white-space:nowrap;flex-shrink:0;border:1px solid #6b728044;"
+                                title="Visitor rank — never used VRChat, may be claimable via support">
+                                old visitor
                             </span>
                             <!-- Copy button RIGHT next to the name -->
                             <Button
