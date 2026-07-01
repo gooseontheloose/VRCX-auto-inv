@@ -48,12 +48,23 @@ export async function auditDbLoadEntries(groupId) {
 // PUT is idempotent — safe to call with entries already in the store.
 export async function auditDbSaveEntries(groupId, entries) {
     if (!entries.length) return;
+    // Entries without a valid id cannot be stored (id is the keyPath) — skip them.
+    const valid = entries.filter((e) => e.id != null);
+    if (!valid.length) {
+        console.warn('[auditLogDb] auditDbSaveEntries: no entries with valid id — skipping batch');
+        return;
+    }
     const db = await openDb();
     return new Promise((resolve, reject) => {
         const tx = db.transaction(AUDIT_STORE, 'readwrite');
         const store = tx.objectStore(AUDIT_STORE);
-        for (const entry of entries) {
-            store.put({ ...entry, groupId });
+        for (const entry of valid) {
+            const req = store.put({ ...entry, groupId });
+            req.onerror = (e) => {
+                // Prevent one bad entry from aborting the whole transaction.
+                e.preventDefault();
+                console.warn('[auditLogDb] Failed to put entry', entry.id, ':', e.target.error);
+            };
         }
         tx.oncomplete = resolve;
         tx.onerror = (e) => reject(e.target.error);

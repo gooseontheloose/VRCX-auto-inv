@@ -2,6 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 
 import { watchState } from '../services/watchState';
 
+import DebugLogs from './../views/DebugLogs/DebugLogs.vue';
 import FavoritesAvatar from './../views/Favorites/FavoritesAvatar.vue';
 import FavoritesFriend from './../views/Favorites/FavoritesFriend.vue';
 import FavoritesWorld from './../views/Favorites/FavoritesWorld.vue';
@@ -127,6 +128,7 @@ const routes = [
                 name: 'username-checker',
                 component: UsernameChecker
             },
+            { path: 'debug-logs', name: 'debug-logs', component: DebugLogs },
             { path: 'group-monitor', redirect: { name: 'group-monitor-overview' } },
             { path: 'group-monitor/overview',  name: 'group-monitor-overview',  component: GroupMonitor },
             { path: 'group-monitor/audit',     name: 'group-monitor-audit',     component: GroupAuditLog },

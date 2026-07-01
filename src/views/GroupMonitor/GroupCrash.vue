@@ -107,14 +107,45 @@
         openProfileByName,
         startPolling,
         stopPolling,
+        webhookConfigs,
+        webhookSendingIds,
+        webhookStatus,
+        webhookLastSent,
+        initWebhooks,
+        saveWebhookConfigs,
+        saveWebhookLastSent,
+        warnLeaderboard,
+        mostWarnedLeaderboard,
+        groupAuditPermIds,
+        groupsWithCachedData,
+        groupPermCheckDone,
+        updateGroupAuditPerms,
+        isGroupPermLost,
     } = useGroupMonitorData();
 
     const groupStore = useGroupStore();
     const _route = useRoute();
 
     // ── group selector ───────────────────────────────────────────────────────
-    const groups = computed(() => Array.from(groupStore.currentUserGroups.values()));
-    const selectedGroup = computed(() => groups.value.find((g) => g.id === selectedGroupId.value) ?? null);
+    const allGroups = computed(() => Array.from(groupStore.currentUserGroups.values()));
+    watch(allGroups, (gs) => { if (gs.length) updateGroupAuditPerms(gs); }, { immediate: true });
+    const auditCapableGroups = computed(() => {
+        const all = allGroups.value;
+        if (!groupPermCheckDone.value || (!groupAuditPermIds.value.size && !groupsWithCachedData.value.size)) return all;
+        const f = all.filter((g) => groupAuditPermIds.value.has(g.id) || groupsWithCachedData.value.has(g.id));
+        return f.length > 0 ? f : all;
+    });
+    const groups = auditCapableGroups;
+    const selectedGroup = computed(() => allGroups.value.find((g) => g.id === selectedGroupId.value) ?? null);
+
+    // ── warn leaderboard sort state ───────────────────────────────────────────
+    const warnView = ref('warners');
+    const sortWarnCol = ref('count');
+    const sortWarnDir = ref('desc');
+    const sortWarnedCol = ref('count');
+    const sortWarnedDir = ref('desc');
+    const sortedWarnLeaderboard = computed(() => sortRows([...warnLeaderboard.value], sortWarnCol.value, sortWarnDir.value));
+    const sortedMostWarnedLeaderboard = computed(() => sortRows([...mostWarnedLeaderboard.value], sortWarnedCol.value, sortWarnedDir.value));
 
     // ── route → tab mapping ───────────────────────────────────────────────────
     const ROUTE_TAB_MAP = {
@@ -741,7 +772,8 @@
     watch([crashThreshold, crashWindowSec], () => renderCrashChart());
 
     // ── webhook service ───────────────────────────────────────────────────────
-    const WEBHOOK_STORAGE_KEY = 'gm-webhooks-v1';
+    // webhookConfigs / webhookSendingIds / webhookStatus / webhookLastSent
+    // are module-level singletons from useGroupMonitorData (SQLite-backed).
     const WEBHOOK_TYPE_LABELS = {
         'kick-board': 'Top Kickers',
         'most-kicked': 'Most Kicked',
@@ -750,20 +782,10 @@
         'snitch-report': 'Top Snitches',
         'vk-targets': 'Most Vote-Kicked',
         'crash-alert': 'Crash Alerts',
-        'invite-board': 'Top Inviters'
+        'invite-board': 'Top Inviters',
+        'warn-board': 'Top Warners',
+        'most-warned': 'Most Warned'
     };
-
-    function loadWebhookConfigs() {
-        try { const raw = localStorage.getItem(WEBHOOK_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; }
-    }
-    function saveWebhookConfigsFn(configs) {
-        try { localStorage.setItem(WEBHOOK_STORAGE_KEY, JSON.stringify(configs)); } catch { /* quota */ }
-    }
-
-    const webhookConfigs = ref(loadWebhookConfigs());
-    const webhookSendingIds = ref(new Set());
-    const webhookStatus = ref({});
-    const webhookLastSent = ref(JSON.parse(localStorage.getItem('gm-webhook-lastsent') ?? '{}'));
     const webhookNewUrl = ref('');
     const webhookNewName = ref('');
     const webhookNewType = ref('kick-board');
@@ -823,10 +845,6 @@
         if (crashMonitorInterval) { clearInterval(crashMonitorInterval); crashMonitorInterval = null; }
     }
 
-    function saveLastSent() {
-        try { localStorage.setItem('gm-webhook-lastsent', JSON.stringify(webhookLastSent.value)); } catch { /* quota */ }
-    }
-
     async function webhookScheduler() {
         const now = Date.now();
         for (const wh of webhookConfigs.value) {
@@ -836,7 +854,7 @@
             const fn = getPayloadFn(wh.type, wh.id);
             if (!fn) continue;
             webhookLastSent.value = { ...webhookLastSent.value, [wh.id]: now };
-            saveLastSent();
+            saveWebhookLastSent();
             await sendWebhook(wh.id, fn).catch(() => { });
         }
     }
@@ -860,7 +878,7 @@
             color: webhookNewColor.value || '#5865f2',
             enabled: true, intervalMinutes: Number(webhookNewInterval.value) || 0
         }];
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
         webhookNewUrl.value = '';
         webhookNewName.value = '';
         webhookNewInterval.value = 0;
@@ -870,19 +888,19 @@
         webhookConfigs.value = webhookConfigs.value.map((w) =>
             w.id === id ? { ...w, intervalMinutes: Number(minutes) || 0 } : w
         );
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
     }
 
     function updateWebhookColor(id, color) {
         webhookConfigs.value = webhookConfigs.value.map((w) =>
             w.id === id ? { ...w, color } : w
         );
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
     }
 
     function removeWebhook(id) {
         webhookConfigs.value = webhookConfigs.value.filter((w) => w.id !== id);
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
         const s = { ...webhookStatus.value };
         delete s[id];
         webhookStatus.value = s;
@@ -890,7 +908,7 @@
 
     function toggleWebhook(id) {
         webhookConfigs.value = webhookConfigs.value.map((w) => w.id === id ? { ...w, enabled: !w.enabled } : w);
-        saveWebhookConfigsFn(webhookConfigs.value);
+        saveWebhookConfigs();
     }
 
     async function doFetchWebhook(url, payload) {
@@ -934,6 +952,12 @@
             rows = inviteLeaderboard.value;
             nameFn = (r) => r.actor;
             countFn = (r) => `${r.invites} invites · ${r.converts} joined · ${r.rate}%`;
+        } else if (type === 'warn-board') {
+            title = 'Top Warners'; subtitle = 'Who has issued the most instance warnings to players.';
+            rows = warnLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
+        } else if (type === 'most-warned') {
+            title = 'Most Warned'; subtitle = 'Who has received the most instance warnings.';
+            rows = mostWarnedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
         } else { return null; }
         const lines = rows.slice(0, 25).map((r, i) => `${i + 1}. ${nameFn(r)} — ${countFn(r)}`);
         const description = `*${subtitle}*\n\n${lines.join('\n') || 'No data yet.'}`;
@@ -971,7 +995,7 @@
     }
 
     function getPayloadFn(type, configId) {
-        const leaderboardTypes = ['kick-board', 'most-kicked', 'ban-board', 'most-banned', 'snitch-report', 'vk-targets', 'invite-board'];
+        const leaderboardTypes = ['kick-board', 'most-kicked', 'ban-board', 'most-banned', 'snitch-report', 'vk-targets', 'invite-board', 'warn-board', 'most-warned'];
         if (leaderboardTypes.includes(type)) return () => buildLeaderboardPayload(type, configId);
         return null;
     }
@@ -983,11 +1007,12 @@
     }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
-    onMounted(() => {
+    onMounted(async () => {
+        await initWebhooks();
         loadVoteKickHistory();
         window.addEventListener('resize', onResize);
         const _savedGroupId = localStorage.getItem('gm-group-id');
-        const _startGroupId = (_savedGroupId && groups.value.some((g) => g.id === _savedGroupId)) ? _savedGroupId : groups.value[0]?.id;
+        const _startGroupId = (_savedGroupId && allGroups.value.some((g) => g.id === _savedGroupId)) ? _savedGroupId : allGroups.value[0]?.id;
         // Only fetch if data isn't already loaded from another GroupMonitor page this session
         if (_startGroupId && _startGroupId !== selectedGroupId.value) handleGroupChange(_startGroupId);
         startPolling();
@@ -1035,7 +1060,9 @@
                         <SelectValue placeholder="Select a group…" />
                     </SelectTrigger>
                     <SelectContent>
-                        <SelectItem v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</SelectItem>
+                        <SelectItem v-for="g in groups" :key="g.id" :value="g.id">
+                            {{ g.name }}<template v-if="isGroupPermLost(g.id)"> <span class="text-xs opacity-60">(cached – no access)</span></template>
+                        </SelectItem>
                         <div v-if="groups.length === 0" class="px-3 py-2 text-sm text-muted-foreground">No groups found</div>
                     </SelectContent>
                 </Select>
@@ -1196,6 +1223,66 @@
                             </tbody>
                         </table>
                     </div>
+            </div>
+
+            <!-- ── Warn Leaderboard ── -->
+            <div class="space-y-3">
+                <div class="flex items-center justify-between flex-wrap gap-2">
+                    <div class="flex items-center gap-2">
+                        <AlertTriangle class="size-4 text-amber-500" />
+                        <p class="text-sm font-medium">Warn Leaderboard</p>
+                        <span class="text-xs text-muted-foreground">({{ auditLogs.filter(r => r.eventType === 'group.instance.warn').length }} total warning events)</span>
+                    </div>
+                    <div class="flex gap-1">
+                        <Button size="sm" :variant="warnView === 'warners' ? 'default' : 'outline'" class="h-7 text-xs" @click="warnView = 'warners'">Top Warners</Button>
+                        <Button size="sm" :variant="warnView === 'warned' ? 'default' : 'outline'" class="h-7 text-xs" @click="warnView = 'warned'">Most Warned</Button>
+                    </div>
+                </div>
+                <div class="rounded-lg border bg-card overflow-hidden">
+                    <table class="w-full text-sm">
+                        <thead class="bg-muted/40 border-b">
+                            <tr>
+                                <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground w-8">#</th>
+                                <th class="text-left px-3 py-2 text-xs font-medium text-muted-foreground cursor-pointer select-none"
+                                    @click="warnView === 'warners' ? toggleSort(sortWarnCol, sortWarnDir, 'actor') : toggleSort(sortWarnedCol, sortWarnedDir, 'target')">
+                                    {{ warnView === 'warners' ? 'Moderator' : 'Player' }}
+                                </th>
+                                <th class="text-right px-3 py-2 text-xs font-medium text-muted-foreground cursor-pointer select-none"
+                                    @click="warnView === 'warners' ? toggleSort(sortWarnCol, sortWarnDir, 'count') : toggleSort(sortWarnedCol, sortWarnedDir, 'count')">
+                                    Warnings
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template v-if="warnView === 'warners'">
+                                <tr v-for="(r, i) in sortedWarnLeaderboard.slice(0, 25)" :key="r.id ?? r.actor"
+                                    class="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                                    <td class="px-3 py-2 text-muted-foreground tabular-nums text-xs">{{ i + 1 }}</td>
+                                    <td class="px-3 py-2">
+                                        <span class="cursor-pointer hover:underline" @click="r.id ? openProfileById(r.id) : openProfileByName(r.actor)">{{ r.actor }}</span>
+                                    </td>
+                                    <td class="px-3 py-2 text-right font-medium tabular-nums">{{ r.count }}</td>
+                                </tr>
+                                <tr v-if="sortedWarnLeaderboard.length === 0">
+                                    <td colspan="3" class="px-3 py-8 text-center text-muted-foreground text-xs">No instance warnings recorded for this group.</td>
+                                </tr>
+                            </template>
+                            <template v-else>
+                                <tr v-for="(r, i) in sortedMostWarnedLeaderboard.slice(0, 25)" :key="r.id ?? r.target"
+                                    class="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                                    <td class="px-3 py-2 text-muted-foreground tabular-nums text-xs">{{ i + 1 }}</td>
+                                    <td class="px-3 py-2">
+                                        <span class="cursor-pointer hover:underline" @click="r.id ? openProfileById(r.id) : openProfileByName(r.target)">{{ r.target }}</span>
+                                    </td>
+                                    <td class="px-3 py-2 text-right font-medium tabular-nums">{{ r.count }}</td>
+                                </tr>
+                                <tr v-if="sortedMostWarnedLeaderboard.length === 0">
+                                    <td colspan="3" class="px-3 py-8 text-center text-muted-foreground text-xs">No instance warnings recorded for this group.</td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </template>
     </div>
