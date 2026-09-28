@@ -62,7 +62,11 @@ public static class PawApi
                 return;
             }
 
-            if (request.RemoteEndPoint == null || !IPAddress.IsLoopback(request.RemoteEndPoint.Address))
+            // DNS rebinding: a web page can point its own domain at 127.0.0.1 and make same-origin
+            // requests (no Origin header). Only accept the loopback host names.
+            var host = request.UserHostName?.Split(':')[0];
+            if (request.RemoteEndPoint == null || !IPAddress.IsLoopback(request.RemoteEndPoint.Address) ||
+                (host != "127.0.0.1" && host != "localhost" && host != "[::1]"))
             {
                 await WriteJson(response, 403, "{\"error\":\"forbidden\"}");
                 return;

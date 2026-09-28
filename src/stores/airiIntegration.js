@@ -2,7 +2,7 @@ import { reactive, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 
 import { buildPlayersPayload } from '../shared/utils/airiIntegration';
-import { queryRequest } from '../api';
+import { queryRequest, userRequest } from '../api';
 import { useGameLogStore } from './gameLog';
 import { useLocationStore } from './location';
 import { useUserStore } from './user';
@@ -14,6 +14,10 @@ import configRepository from '../services/config';
 const GROUP_FETCH_INTERVAL_MS = 3000;
 /** Hard cap of represented-group API calls per app session. */
 const GROUP_FETCH_SESSION_CAP = 100;
+/** Minimum gap between two full-profile (bio) API calls. */
+const PROFILE_FETCH_INTERVAL_MS = 3000;
+/** Hard cap of full-profile API calls per app session. */
+const PROFILE_FETCH_SESSION_CAP = 150;
 
 const CONFIG_KEYS = {
     enabled: 'PAW_airiIntegration_enabled',
@@ -52,6 +56,16 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     const groupFetchQueue = ref([]);
     const groupFetchCount = ref(0);
     const isGroupFetcherRunning = ref(false);
+
+    // ── Full profiles for bios (in-memory, this session only) ──
+    // Instance players are often cached from lighter sources (the friends
+    // list, instance data) that carry no bio. When bios are shared, players
+    // whose profile was never fully fetched get one getUser call each,
+    // throttled and capped, which fills cachedUsers with their bio.
+    const profileFetched = new Set();
+    const profileFetchQueue = ref([]);
+    const profileFetchCount = ref(0);
+    const isProfileFetcherRunning = ref(false);
 
     let isSettingsLoaded = false;
 
@@ -178,6 +192,75 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
         for (const userId of playerList.keys()) {
             enqueueGroupFetch(userId);
+            enqueueProfileFetch(userId);
+        }
+    }
+
+    function isProfileFetchingActive() {
+        return (
+            enabled.value && shareBios.value && Boolean(watchState.isLoggedIn)
+        );
+    }
+
+    /**
+     * Queue a full profile fetch (for the bio) when the cached profile was
+     * never fully fetched. Throttled and capped like the group lookups.
+     * @param {string} userId
+     */
+    function enqueueProfileFetch(userId) {
+        if (!isProfileFetchingActive() || typeof userId !== 'string') {
+            return;
+        }
+        if (
+            !userId.startsWith('usr_') ||
+            userId === userStore.currentUser?.id ||
+            profileFetched.has(userId) ||
+            profileFetchQueue.value.includes(userId) ||
+            profileFetchCount.value >= PROFILE_FETCH_SESSION_CAP
+        ) {
+            return;
+        }
+        const cached = userStore.cachedUsers.get(userId);
+        if (cached?.$lastFetch) {
+            profileFetched.add(userId);
+            return;
+        }
+        profileFetchQueue.value.push(userId);
+        if (!isProfileFetcherRunning.value) {
+            processProfileFetchQueue();
+        }
+    }
+
+    async function processProfileFetchQueue() {
+        if (isProfileFetcherRunning.value) {
+            return;
+        }
+        isProfileFetcherRunning.value = true;
+        try {
+            while (
+                profileFetchQueue.value.length > 0 &&
+                isProfileFetchingActive() &&
+                profileFetchCount.value < PROFILE_FETCH_SESSION_CAP
+            ) {
+                const userId = profileFetchQueue.value.shift();
+                if (profileFetched.has(userId)) {
+                    continue;
+                }
+                profileFetched.add(userId);
+                profileFetchCount.value++;
+                try {
+                    await userRequest.getUser({ userId });
+                } catch (err) {
+                    console.warn(
+                        '[AiriIntegration] profile fetch failed',
+                        userId,
+                        err
+                    );
+                }
+                await sleep(PROFILE_FETCH_INTERVAL_MS);
+            }
+        } finally {
+            isProfileFetcherRunning.value = false;
         }
     }
 
@@ -187,6 +270,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
      */
     function handlePlayerJoined(userId) {
         enqueueGroupFetch(userId);
+        enqueueProfileFetch(userId);
     }
 
     async function processGroupFetchQueue() {
@@ -245,12 +329,22 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
     });
 
+    watch([enabled, shareBios], ([isEnabled, isShareBios]) => {
+        if (isEnabled && isShareBios) {
+            enqueueCurrentPlayers();
+        } else {
+            profileFetchQueue.value = [];
+        }
+    });
+
     watch(
         () => watchState.isLoggedIn,
         (isLoggedIn) => {
             if (!isLoggedIn) {
                 groupFetchQueue.value = [];
                 representedGroups.clear();
+                profileFetchQueue.value = [];
+                profileFetched.clear();
             }
         },
         { flush: 'sync' }
