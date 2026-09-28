@@ -163,6 +163,13 @@ const navDefinitions = [
         routeName: 'group-monitor-webhooks'
     },
     {
+        key: 'airi-integration',
+        icon: 'ri-robot-2-line',
+        tooltip: 'nav_tooltip.airi_integration',
+        labelKey: 'nav_tooltip.airi_integration',
+        routeName: 'airi-integration'
+    },
+    {
         key: 'debug-logs',
         icon: 'ri-bug-line',
         tooltip: 'nav_tooltip.debug_logs',

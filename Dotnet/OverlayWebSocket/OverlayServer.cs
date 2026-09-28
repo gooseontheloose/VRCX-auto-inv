@@ -49,6 +49,10 @@ public class OverlayServer
                 {
                     ProcessRequest(listenerContext);
                 }
+                else if (PawApi.IsPawRequest(listenerContext.Request))
+                {
+                    _ = PawApi.HandleRequest(listenerContext);
+                }
                 else
                 {
                     listenerContext.Response.StatusCode = 400;

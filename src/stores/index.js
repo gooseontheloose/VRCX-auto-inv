@@ -2,6 +2,7 @@ import { createPinia } from 'pinia';
 
 import { getSentry, isSentryOptedIn } from '../plugins';
 import { useAdvancedSettingsStore } from './settings/advanced';
+import { useAiriIntegrationStore } from './airiIntegration';
 import { useActivityStore } from './activity';
 import { useAppearanceSettingsStore } from './settings/appearance';
 import { useAuthStore } from './auth';
@@ -164,7 +165,8 @@ export function createGlobalStores() {
         charts: useChartsStore(),
         dashboard: useDashboardStore(),
         modal: useModalStore(),
-        quickSearch: useQuickSearchStore()
+        quickSearch: useQuickSearchStore(),
+        airiIntegration: useAiriIntegrationStore()
     };
 }
 
@@ -208,5 +210,6 @@ export {
     useUpdateLoopStore,
     useVrcStatusStore,
     useModalStore,
-    useQuickSearchStore
+    useQuickSearchStore,
+    useAiriIntegrationStore
 };
