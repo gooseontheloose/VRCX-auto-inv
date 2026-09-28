@@ -35,6 +35,7 @@ export function createBaseDefaultNavLayout(t) {
         },
         { type: 'item', key: 'tools' },
         { type: 'item', key: 'username-checker' },
+        { type: 'item', key: 'airi-integration' },
         {
             type: 'folder',
             id: 'default-folder-group-monitor',

@@ -39,6 +39,7 @@ import { useUserStore } from '../stores/user';
 import { useVrStore } from '../stores/vr';
 import { useVrcxStore } from '../stores/vrcx';
 import { useGroupInviteStore } from '../stores/groupInvite';
+import { useAiriIntegrationStore } from '../stores/airiIntegration';
 
 import gameLogService from '../services/gameLog.js';
 
@@ -277,6 +278,16 @@ export function addGameLogEntry(gameLog, location) {
                 const groupInviteStore = useGroupInviteStore();
                 if (groupInviteStore.autoInviteEnabled) {
                     groupInviteStore.handlePlayerJoined(userId, gameLog.displayName);
+                }
+            }
+            // AIRI integration hook: throttled represented-group lookup (opt-in)
+            {
+                const airiIntegrationStore = useAiriIntegrationStore();
+                if (
+                    airiIntegrationStore.enabled &&
+                    airiIntegrationStore.fetchGroups
+                ) {
+                    airiIntegrationStore.handlePlayerJoined(userId);
                 }
             }
             break;
