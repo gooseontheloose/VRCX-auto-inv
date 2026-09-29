@@ -12,6 +12,7 @@ import { toast } from 'vue-sonner';
 
 import {
     $throw,
+    $throwSilent,
     buildRequestInit,
     parseResponse,
     processBulk,
@@ -29,13 +30,16 @@ describe('$throw', () => {
         toast.error.mockClear();
         let err;
         try {
-            $throw(403, 'nope', 'groups/grp_x/auditLogs', true);
+            $throwSilent(403, 'nope', 'groups/grp_x/auditLogs');
         } catch (e) {
             err = e;
         }
         expect(err.status).toBe(403);
         expect(err.endpoint).toBe('groups/grp_x/auditLogs');
         expect(toast.error).not.toHaveBeenCalled();
+        // and the next normal error toasts again
+        expect(() => $throw(500, 'boom', 'x/y/z')).toThrow();
+        expect(toast.error).toHaveBeenCalledTimes(1);
     });
 });
 

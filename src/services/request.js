@@ -100,7 +100,7 @@ export function request(endpoint, options) {
     // silentErrors: throw as usual but skip the error toast (background work
     // that reports failures in its own UI, e.g. the Group Monitor service).
     const { silentErrors, ...requestOptions } = options ?? {};
-    const fail = (code, error, ep) => $throw(code, error, ep, silentErrors);
+    const fail = silentErrors ? $throwSilent : $throw;
     const init = buildRequestInit(endpoint, requestOptions);
     if (init.method === 'GET') {
         // don't retry recent 404/403
@@ -322,9 +322,8 @@ export function shouldIgnoreError(code, endpoint) {
  * @param {number} code
  * @param {string|object} [error]
  * @param {string} [endpoint]
- * @param {boolean} [silent] throw without showing an error toast
  */
-export function $throw(code, error, endpoint, silent = false) {
+export function $throw(code, error, endpoint) {
     let message = [];
     if (code > 0) {
         const status = statusCodes[code];
@@ -354,7 +353,7 @@ export function $throw(code, error, endpoint, silent = false) {
     }
     const text = message.join('\n');
 
-    if (text.length && !ignoreError && !silent) {
+    if (text.length && !ignoreError && !silentThrowDepth) {
         toast.error(message[0], {
             description: message.slice(1).join('\n'),
             position: 'bottom-left'
@@ -364,6 +363,24 @@ export function $throw(code, error, endpoint, silent = false) {
     e.status = code;
     e.endpoint = endpoint;
     throw e;
+}
+
+let silentThrowDepth = 0;
+
+/**
+ * Same as $throw, but without the error toast (for background work that
+ * reports failures in its own UI).
+ * @param {number} code
+ * @param {string|object} [error]
+ * @param {string} [endpoint]
+ */
+export function $throwSilent(code, error, endpoint) {
+    silentThrowDepth++;
+    try {
+        $throw(code, error, endpoint);
+    } finally {
+        silentThrowDepth--;
+    }
 }
 
 /**
