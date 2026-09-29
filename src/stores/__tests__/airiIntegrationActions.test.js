@@ -15,7 +15,11 @@ const mocks = vi.hoisted(() => ({
         getUser: vi.fn()
     },
     handleNotificationAccept: vi.fn(),
-    handleNotificationHide: vi.fn()
+    handleNotificationHide: vi.fn(),
+    refreshNotifications: vi.fn(),
+    addFriendship: vi.fn(),
+    friendLogCurrent: new Map(),
+    notifications: []
 }));
 
 vi.mock('../../services/config', () => ({
@@ -47,19 +51,24 @@ vi.mock('../../api', () => ({
     userRequest: { getUser: mocks.api.getUser }
 }));
 vi.mock('../../coordinators/friendRelationshipCoordinator', () => ({
+    addFriendship: mocks.addFriendship,
     getFriendRequest: vi.fn(() => mocks.friendRequestKey),
     handleFriendStatus: vi.fn()
 }));
 vi.mock('../friend', () => ({
     useFriendStore: () => ({
         friends: mocks.friends,
+        friendLog: mocks.friendLogCurrent,
         friendLogTable: { data: mocks.friendLog }
     })
 }));
 vi.mock('../notification', () => ({
     useNotificationStore: () => ({
         handleNotificationAccept: mocks.handleNotificationAccept,
-        handleNotificationHide: mocks.handleNotificationHide
+        handleNotificationHide: mocks.handleNotificationHide,
+        notificationTable: { data: mocks.notifications },
+        isNotificationsLoading: false,
+        refreshNotifications: mocks.refreshNotifications
     })
 }));
 vi.mock('../user', () => ({
@@ -104,6 +113,8 @@ beforeEach(() => {
     mocks.cachedUsers.clear();
     mocks.cachedUsers.set(USER_A, { id: USER_A, displayName: 'Alice' });
     mocks.friendRequestKey = '';
+    mocks.notifications.length = 0;
+    mocks.friendLogCurrent.clear();
     mocks.watchState.isLoggedIn = true;
     vi.clearAllMocks();
     mocks.api.getFriendStatus.mockImplementation(() =>
@@ -274,5 +285,157 @@ describe('AIRI actions', () => {
         const res = await call(store, 'friend-request');
         expect(res.status).toBe(429);
         expect(res.body.reason).toBe('user_cooldown');
+    });
+
+    test('friend-requests lists incoming requests from notifications', async () => {
+        const store = await makeStore();
+        const USER_B = 'usr_11111111-2222-4333-8444-555555555555';
+        mocks.friends.set(USER_B, {});
+        mocks.notifications.push(
+            {
+                id: 'frq_1',
+                type: 'friendRequest',
+                senderUserId: USER_A,
+                senderUsername: 'Alice',
+                created_at: '2026-01-01T10:00:00.000Z'
+            },
+            {
+                id: 'frq_2',
+                type: 'friendRequest',
+                senderUserId: USER_B,
+                senderUsername: 'Bob',
+                created_at: '2026-01-02T10:00:00.000Z'
+            },
+            { id: 'not_3', type: 'invite', senderUserId: USER_A }
+        );
+        const res = await call(store, 'friend-requests', '');
+        expect(res).toEqual({
+            status: 200,
+            body: {
+                ok: true,
+                requests: [
+                    {
+                        userId: USER_A,
+                        displayName: 'Alice',
+                        createdAt: '2026-01-01T10:00:00.000Z'
+                    }
+                ]
+            }
+        });
+        expect(mocks.api.getFriendStatus).not.toHaveBeenCalled();
+        expect(store.actionLog).toHaveLength(0);
+    });
+
+    test('friend-requests needs both toggles and is rate limited', async () => {
+        const off = await makeStore({ actionsEnabled: false });
+        expect((await call(off, 'friend-requests', '')).status).toBe(403);
+
+        setActivePinia(createPinia());
+        mocks.config.set(
+            'PAW_airiIntegration_actionHistory',
+            JSON.stringify(
+                Array.from({ length: 120 }, () => ({
+                    kind: 'friend-requests',
+                    userId: '',
+                    at: Date.now() - 1000
+                }))
+            )
+        );
+        const store = await makeStore();
+        const res = await call(store, 'friend-requests', '');
+        expect(res.status).toBe(429);
+        expect(res.body.reason).toBe('hourly_limit');
+    });
+
+    test('friend-requests refreshes notifications at most once a minute', async () => {
+        const store = await makeStore();
+        mocks.refreshNotifications.mockImplementation(async () => {
+            mocks.notifications.push({
+                id: 'frq_1',
+                type: 'friendRequest',
+                senderUserId: USER_A,
+                senderUsername: 'Alice',
+                created_at: '2026-01-01T10:00:00.000Z'
+            });
+        });
+        const first = await call(store, 'friend-requests', '');
+        expect(first.body.requests.map((r) => r.userId)).toEqual([USER_A]);
+        await call(store, 'friend-requests', '');
+        expect(mocks.refreshNotifications).toHaveBeenCalledTimes(1);
+    });
+
+    test('friend-accept reports VRChat errors and does not claim success', async () => {
+        const store = await makeStore();
+        mocks.friendRequestKey = 'not_123';
+        mocks.api.acceptFriendRequestNotification.mockRejectedValue(
+            new Error('500 internal')
+        );
+        const res = await call(store, 'friend-accept');
+        expect(res.status).toBe(502);
+        expect(res.body).toMatchObject({ ok: false, error: 'vrchat_error' });
+        expect(mocks.handleNotificationAccept).not.toHaveBeenCalled();
+
+        mocks.api.getFriendStatus.mockImplementation(() =>
+            status({ isFriend: false, incomingRequest: true })
+        );
+        const after = await call(store, 'friend-status');
+        expect(after.body).toMatchObject({
+            isFriend: false,
+            incomingPending: true
+        });
+        expect(after.body).not.toHaveProperty('syncing');
+    });
+
+    test('friend-accept of an expired request returns no_pending_request', async () => {
+        const store = await makeStore();
+        mocks.friendRequestKey = 'not_123';
+        mocks.api.acceptFriendRequestNotification.mockRejectedValue(
+            new Error('404 not found')
+        );
+        const res = await call(store, 'friend-accept');
+        expect(res.body).toMatchObject({
+            ok: false,
+            result: 'no_pending_request'
+        });
+        expect(mocks.handleNotificationHide).toHaveBeenCalledWith('not_123');
+    });
+
+    test('after a confirmed accept, friend-status covers VRChat lag and VRCX re-syncs', async () => {
+        const store = await makeStore();
+        vi.useFakeTimers();
+        try {
+            mocks.friendRequestKey = 'not_123';
+            mocks.api.acceptFriendRequestNotification.mockResolvedValue({
+                json: {},
+                params: { notificationId: 'not_123' }
+            });
+            expect((await call(store, 'friend-accept')).body.result).toBe(
+                'accepted'
+            );
+            // VRChat still reports the old state for a while.
+            mocks.api.getFriendStatus.mockImplementation(() =>
+                status({ isFriend: false, incomingRequest: true })
+            );
+            expect((await call(store, 'friend-status')).body).toMatchObject({
+                isFriend: true,
+                incomingPending: false,
+                syncing: true
+            });
+            // A second accept is not sent again.
+            expect((await call(store, 'friend-accept')).body.result).toBe(
+                'already_friends'
+            );
+            expect(
+                mocks.api.acceptFriendRequestNotification
+            ).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(15 * 1000);
+            expect(mocks.addFriendship).toHaveBeenCalledWith(USER_A);
+            mocks.friendLogCurrent.set(USER_A, {});
+            await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+            expect(mocks.addFriendship).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

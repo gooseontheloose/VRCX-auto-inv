@@ -1,5 +1,6 @@
 import {
     AIRI_ACTION_LIMITS,
+    buildIncomingFriendRequests,
     buildPlayersPayload,
     checkActionRateLimit,
     isValidAiriUserId,
@@ -417,5 +418,102 @@ describe('checkActionRateLimit', () => {
         expect(checkActionRateLimit([], 'unfriend', USER_A, NOW).allowed).toBe(
             false
         );
+    });
+});
+
+describe('buildIncomingFriendRequests', () => {
+    const ME = 'usr_99999999-9999-4999-8999-999999999999';
+
+    function fr(senderUserId, createdAt, extra = {}) {
+        return {
+            id: `frq_${senderUserId}_${createdAt}`,
+            type: 'friendRequest',
+            senderUserId,
+            senderUsername: `name ${senderUserId.slice(4, 8)}`,
+            created_at: createdAt,
+            ...extra
+        };
+    }
+
+    test('returns incoming friend requests newest first', () => {
+        const result = buildIncomingFriendRequests([
+            fr(USER_A, '2026-01-01T10:00:00.000Z'),
+            fr(USER_B, '2026-01-02T10:00:00.000Z')
+        ]);
+        expect(result).toEqual([
+            {
+                userId: USER_B,
+                displayName: 'name 1111',
+                createdAt: '2026-01-02T10:00:00.000Z'
+            },
+            {
+                userId: USER_A,
+                displayName: 'name 0f1e',
+                createdAt: '2026-01-01T10:00:00.000Z'
+            }
+        ]);
+    });
+
+    test('skips other types, expired, self, friends and invalid ids', () => {
+        const friendId = 'usr_22222222-2222-4222-8222-222222222222';
+        const result = buildIncomingFriendRequests(
+            [
+                fr(USER_A, '2026-01-01T10:00:00.000Z', { type: 'invite' }),
+                fr(USER_A, '2026-01-01T10:00:00.000Z', {
+                    type: 'ignoredFriendRequest'
+                }),
+                fr(USER_A, '2026-01-01T10:00:00.000Z', { $isExpired: true }),
+                fr(ME, '2026-01-01T10:00:00.000Z'),
+                fr(friendId, '2026-01-01T10:00:00.000Z'),
+                fr('usr_bad', '2026-01-01T10:00:00.000Z'),
+                null,
+                fr(USER_B, '2026-01-01T10:00:00.000Z')
+            ],
+            { currentUserId: ME, friendIds: new Set([friendId]) }
+        );
+        expect(result.map((r) => r.userId)).toEqual([USER_B]);
+        expect(buildIncomingFriendRequests('nope')).toEqual([]);
+    });
+
+    test('one entry per sender (newest) and a name fallback', () => {
+        const result = buildIncomingFriendRequests(
+            [
+                fr(USER_A, '2026-01-01T10:00:00.000Z'),
+                fr(USER_A, '2026-01-03T10:00:00.000Z', { senderUsername: '' }),
+                fr(USER_B, 'not a date')
+            ],
+            { displayNameFor: (id) => (id === USER_A ? 'Alice' : '') }
+        );
+        expect(result).toEqual([
+            {
+                userId: USER_A,
+                displayName: 'Alice',
+                createdAt: '2026-01-03T10:00:00.000Z'
+            },
+            { userId: USER_B, displayName: 'name 1111', createdAt: null }
+        ]);
+    });
+
+    test('caps at 50', () => {
+        const users = uniqueUsers(60);
+        const result = buildIncomingFriendRequests(
+            users.map((id, i) => fr(id, new Date(NOW + i * 1000).toISOString()))
+        );
+        expect(result).toHaveLength(50);
+        expect(result[0].userId).toBe(users[59]);
+    });
+
+    test('has its own hourly limit of 120', () => {
+        const history = Array.from({ length: 120 }, (_, i) => ({
+            kind: 'friend-requests',
+            userId: '',
+            at: NOW - 1000 - i
+        }));
+        expect(
+            checkActionRateLimit(history, 'friend-requests', '', NOW).reason
+        ).toBe('hourly_limit');
+        expect(
+            checkActionRateLimit(history, 'friend-status', USER_A, NOW).allowed
+        ).toBe(true);
     });
 });

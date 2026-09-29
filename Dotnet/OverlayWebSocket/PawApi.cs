@@ -27,6 +27,9 @@ namespace VRCX;
 /// POST /paw/friend-request {"userId":"usr_..."}
 /// POST /paw/friend-accept  {"userId":"usr_..."}
 /// GET  /paw/friend-status?userId=usr_...
+/// GET  /paw/friend-requests
+///   200 {"ok":true,"requests":[{"userId","displayName","createdAt"}]} - incoming pending
+///       friend requests VRCX already knows (notification table), newest first, max 50
 ///   200 {"ok":bool,"result":"...","userId":"...","displayName":"..."}
 ///       (friend-status: {"ok":true,"isFriend":b,"outgoingPending":b,"incomingPending":b,...})
 ///   400 invalid_user_id / self_not_allowed, 403 {"enabled":b,"actionsEnabled":false,...},
@@ -186,6 +189,8 @@ public static class PawApi
             return "friend-accept";
         if (string.Equals(path, "/paw/friend-status", StringComparison.OrdinalIgnoreCase))
             return "friend-status";
+        if (string.Equals(path, "/paw/friend-requests", StringComparison.OrdinalIgnoreCase))
+            return "friend-requests";
         return null;
     }
 
@@ -231,8 +236,9 @@ public static class PawApi
             return;
         }
 
-        var userId = await ReadUserId(request, kind);
-        if (userId == null || !UserIdRegex.IsMatch(userId))
+        // friend-requests lists incoming requests and takes no userId.
+        var userId = kind == "friend-requests" ? "" : await ReadUserId(request, kind);
+        if (userId == null || (kind != "friend-requests" && !UserIdRegex.IsMatch(userId)))
         {
             await WriteJson(response, 400, "{\"ok\":false,\"error\":\"invalid_user_id\"}");
             return;
@@ -292,8 +298,20 @@ public static class PawApi
                               nameElement.ValueKind == JsonValueKind.String
                 ? nameElement.GetString()
                 : "";
-            logger.Info("PAW API action {0} userId={1} displayName=\"{2}\" -> {3} {4}",
-                kind, userId, displayName, status, body);
+            if (kind == "friend-requests")
+            {
+                var count = bodyElement.ValueKind == JsonValueKind.Object &&
+                            bodyElement.TryGetProperty("requests", out var requestsElement) &&
+                            requestsElement.ValueKind == JsonValueKind.Array
+                    ? requestsElement.GetArrayLength()
+                    : 0;
+                logger.Info("PAW API action {0} -> {1} count={2}", kind, status, count);
+            }
+            else
+            {
+                logger.Info("PAW API action {0} userId={1} displayName=\"{2}\" -> {3} {4}",
+                    kind, userId, displayName, status, body);
+            }
         }
 
         await WriteJson(response, status, body);

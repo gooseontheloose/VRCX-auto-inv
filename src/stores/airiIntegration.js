@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 
 import {
     AIRI_ACTION_KINDS,
+    buildIncomingFriendRequests,
     buildPlayersPayload,
     checkActionRateLimit,
     isValidAiriUserId,
@@ -15,6 +16,7 @@ import {
     userRequest
 } from '../api';
 import {
+    addFriendship,
     getFriendRequest,
     handleFriendStatus
 } from '../coordinators/friendRelationshipCoordinator';
@@ -48,6 +50,22 @@ const CONFIG_KEYS = {
 /** Entries kept in the "recent AIRI actions" list. */
 const ACTION_LOG_MAX = 25;
 
+/**
+ * After a successful accept, VRChat's friend status can lag for a minute or
+ * two. For this long friend-status reports the accepted user as a friend.
+ */
+const ACCEPT_SYNC_WINDOW_MS = 10 * 60 * 1000;
+/**
+ * VRCX's own addFriendship() checks the friend status once, right after the
+ * accept, and VRChat usually still says "not friends" then, so the friend
+ * list / friend log entry is missed. Re-run it after these delays.
+ */
+const ACCEPT_FOLLOW_UP_DELAYS_MS = [15 * 1000, 45 * 1000, 2 * 60 * 1000];
+/** GET /paw/friend-requests refreshes VRCX's notifications at most this often. */
+const NOTIFICATION_REFRESH_INTERVAL_MS = 60 * 1000;
+/** Max wait for a notification refresh VRCX is already running. */
+const NOTIFICATION_REFRESH_WAIT_MS = 20 * 1000;
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -73,6 +91,85 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     const actionLog = ref([]);
     /** Serializes actions so rate-limit checks and records never race. */
     let actionChain = Promise.resolve();
+    /** userId -> time of an accept VRChat confirmed (in memory). */
+    const recentAccepts = new Map();
+    let lastNotificationRefreshAt = 0;
+
+    /**
+     * After a confirmed accept, re-run VRCX's own addFriendship() a few times
+     * until VRChat reports the friendship (it adds the friend and writes the
+     * "Friend" friend-log entry).
+     * @param {string} userId
+     */
+    function scheduleAcceptFollowUp(userId) {
+        let attempt = 0;
+        const step = async () => {
+            const friendLog = useFriendStore().friendLog;
+            if (!watchState.isLoggedIn || friendLog?.has(userId)) {
+                return;
+            }
+            try {
+                if (!userStore.cachedUsers.has(userId)) {
+                    await userRequest.getUser({ userId });
+                }
+                addFriendship(userId);
+            } catch (err) {
+                console.warn('[AiriIntegration] accept follow-up failed', err);
+            }
+            if (attempt < ACCEPT_FOLLOW_UP_DELAYS_MS.length) {
+                setTimeout(step, ACCEPT_FOLLOW_UP_DELAYS_MS[attempt++]);
+            }
+        };
+        setTimeout(step, ACCEPT_FOLLOW_UP_DELAYS_MS[attempt++]);
+    }
+
+    function markAccepted(userId) {
+        recentAccepts.set(userId, Date.now());
+        scheduleAcceptFollowUp(userId);
+    }
+
+    /**
+     * Refresh notifications from VRChat with VRCX's own refresh (the same
+     * as the Notifications page refresh button), at most once a minute.
+     * Waits for a refresh VRCX is already running, because that one clears
+     * the friend requests before refetching them.
+     */
+    async function refreshNotificationsThrottled() {
+        const notificationStore = useNotificationStore();
+        const now = Date.now();
+        if (
+            !notificationStore.isNotificationsLoading &&
+            now - lastNotificationRefreshAt >=
+                NOTIFICATION_REFRESH_INTERVAL_MS &&
+            typeof notificationStore.refreshNotifications === 'function'
+        ) {
+            lastNotificationRefreshAt = now;
+            await notificationStore.refreshNotifications();
+        }
+        const deadline = Date.now() + NOTIFICATION_REFRESH_WAIT_MS;
+        while (
+            notificationStore.isNotificationsLoading &&
+            Date.now() < deadline
+        ) {
+            await sleep(250);
+        }
+    }
+
+    /**
+     * @param {string} userId
+     * @returns {boolean} accepted recently and VRChat may still lag
+     */
+    function isRecentlyAccepted(userId) {
+        const at = recentAccepts.get(userId);
+        if (at === undefined) {
+            return false;
+        }
+        if (Date.now() - at >= ACCEPT_SYNC_WINDOW_MS) {
+            recentAccepts.delete(userId);
+            return false;
+        }
+        return true;
+    }
 
     // ── In-memory stats ────────────────────────────────────────
     const requestCount = ref(0);
@@ -250,7 +347,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         console.log(
             `[AiriIntegration] ${new Date(at).toISOString()} action=${kind} userId=${userId} displayName=${JSON.stringify(displayName || '')} result=${result} status=${status}`
         );
-        if (kind === 'friend-status') {
+        if (kind === 'friend-status' || kind === 'friend-requests') {
             return;
         }
         actionLog.value = [
@@ -330,7 +427,53 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
         recordAction('friend-status', userId);
         const status = await fetchFriendStatus(userId);
+        if (status.isFriend) {
+            recentAccepts.delete(userId);
+        } else if (isRecentlyAccepted(userId)) {
+            // Accepted and confirmed by VRChat, but its status endpoint lags.
+            return [
+                200,
+                {
+                    ok: true,
+                    userId,
+                    isFriend: true,
+                    outgoingPending: false,
+                    incomingPending: false,
+                    syncing: true
+                }
+            ];
+        }
         return [200, { ok: true, userId, ...status }];
+    }
+
+    /**
+     * Incoming pending friend requests from VRCX's notification table,
+     * refreshed first with VRCX's own notification refresh (throttled).
+     */
+    async function runFriendRequests() {
+        const limit = checkActionRateLimit(
+            actionHistory,
+            'friend-requests',
+            '',
+            Date.now()
+        );
+        if (!limit.allowed) {
+            return rateLimited(limit);
+        }
+        recordAction('friend-requests', '');
+        await refreshNotificationsThrottled();
+        const friends = useFriendStore().friends;
+        const requests = buildIncomingFriendRequests(
+            useNotificationStore().notificationTable?.data,
+            {
+                currentUserId: userStore.currentUser.id,
+                friendIds: {
+                    has: (id) => friends.has(id) || isRecentlyAccepted(id)
+                },
+                displayNameFor: cachedDisplayName
+            }
+        );
+        return [200, { ok: true, requests }];
     }
 
     async function runFriendRequest(userId) {
@@ -364,7 +507,10 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     }
 
     async function runFriendAccept(userId) {
-        if (useFriendStore().friends.has(userId)) {
+        if (
+            useFriendStore().friends.has(userId) ||
+            isRecentlyAccepted(userId)
+        ) {
             return [200, { ok: false, result: 'already_friends' }];
         }
         const limit = checkActionRateLimit(
@@ -385,6 +531,9 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
                     await notificationRequest.acceptFriendRequestNotification({
                         notificationId
                     });
+                // Only reached once VRChat answered the accept with success;
+                // API errors throw and become 502 / no_pending_request.
+                markAccepted(userId);
                 notificationStore.handleNotificationAccept(args);
                 return [200, { ok: true, result: 'accepted' }];
             } catch (err) {
@@ -406,6 +555,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
         recordAction('friend-accept', userId);
         await friendRequest.sendFriendRequest({ userId });
+        markAccepted(userId);
         addFriendRequestLog(userId, await resolveDisplayName(userId));
         return [200, { ok: true, result: 'accepted' }];
     }
@@ -423,6 +573,12 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
         if (!AIRI_ACTION_KINDS.includes(kind)) {
             return [404, { ok: false, error: 'not_found' }];
+        }
+        if (kind === 'friend-requests') {
+            if (!watchState.isLoggedIn || !userStore.currentUser?.id) {
+                return [503, { ok: false, error: 'not_logged_in' }];
+            }
+            return await runFriendRequests();
         }
         if (!isValidAiriUserId(userId)) {
             return [400, { ok: false, error: 'invalid_user_id' }];
@@ -455,7 +611,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
 
     /**
      * Called by the C# host for POST /paw/friend-request, POST
-     * /paw/friend-accept and GET /paw/friend-status (after it checked the
+     * /paw/friend-accept, GET /paw/friend-status and GET
+     * /paw/friend-requests (userId '' for the latter; after it checked the
      * X-Paw-Token header). Actions run one at a time.
      * @param {string} kind
      * @param {string} userId
@@ -464,6 +621,14 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     function handleActionRequest(kind, userId) {
         const run = actionChain.then(async () => {
             const [status, body] = await runAction(kind, userId);
+            if (kind === 'friend-requests') {
+                const result =
+                    status === 200
+                        ? `count:${body.requests.length}`
+                        : `${body.error}${body.reason ? `:${body.reason}` : ''}`;
+                logAction(kind, '-', '', result, status);
+                return actionResponse(status, body);
+            }
             const safeUserId = isValidAiriUserId(userId) ? userId : '';
             const displayName = safeUserId ? cachedDisplayName(safeUserId) : '';
             if (status === 200) {

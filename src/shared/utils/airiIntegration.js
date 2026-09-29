@@ -207,7 +207,8 @@ const DAY_MS = 24 * HOUR_MS;
 export const AIRI_ACTION_KINDS = Object.freeze([
     'friend-request',
     'friend-accept',
-    'friend-status'
+    'friend-status',
+    'friend-requests'
 ]);
 
 /**
@@ -221,8 +222,12 @@ export const AIRI_ACTION_LIMITS = Object.freeze({
         perUserWindowMs: DAY_MS
     }),
     'friend-accept': Object.freeze({ perHour: 30 }),
-    'friend-status': Object.freeze({ perHour: 120 })
+    'friend-status': Object.freeze({ perHour: 120 }),
+    'friend-requests': Object.freeze({ perHour: 120 })
 });
+
+/** Max entries returned by GET /paw/friend-requests. */
+export const AIRI_FRIEND_REQUESTS_MAX = 50;
 
 const USER_ID_RE =
     /^usr_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -332,4 +337,65 @@ export function checkActionRateLimit(history, kind, userId, now) {
         }
     }
     return { allowed: true };
+}
+
+/**
+ * Incoming pending friend requests from VRCX's notification table
+ * (type "friendRequest", filled by VRCX's own notification refresh and
+ * websocket). One entry per sender, newest first, capped.
+ * @param {unknown} notifications notificationTable.data
+ * @param {object} [options]
+ * @param {string} [options.currentUserId] requests sent by this user are skipped
+ * @param {{has: (userId: string) => boolean}} [options.friendIds] senders already friends are skipped
+ * @param {(userId: string) => string} [options.displayNameFor] fallback name lookup
+ * @param {number} [options.limit]
+ * @returns {{userId: string, displayName: string, createdAt: string|null}[]}
+ */
+export function buildIncomingFriendRequests(notifications, options = {}) {
+    const {
+        currentUserId = '',
+        friendIds = null,
+        displayNameFor = null,
+        limit = AIRI_FRIEND_REQUESTS_MAX
+    } = options;
+    if (!Array.isArray(notifications)) {
+        return [];
+    }
+    const bySender = new Map();
+    for (const n of notifications) {
+        if (
+            !n ||
+            typeof n !== 'object' ||
+            n.type !== 'friendRequest' ||
+            n.$isExpired ||
+            !isValidAiriUserId(n.senderUserId) ||
+            n.senderUserId === currentUserId ||
+            friendIds?.has(n.senderUserId)
+        ) {
+            continue;
+        }
+        const parsed = Date.parse(n.created_at ?? n.createdAt);
+        const ts = Number.isFinite(parsed) ? parsed : null;
+        const prev = bySender.get(n.senderUserId);
+        if (prev && (prev.ts ?? 0) >= (ts ?? 0)) {
+            continue;
+        }
+        let displayName =
+            typeof n.senderUsername === 'string' ? n.senderUsername : '';
+        if (!displayName && typeof displayNameFor === 'function') {
+            displayName = str(displayNameFor(n.senderUserId));
+        }
+        bySender.set(n.senderUserId, {
+            ts,
+            entry: {
+                userId: n.senderUserId,
+                displayName: str(displayName),
+                createdAt: ts === null ? null : new Date(ts).toISOString()
+            }
+        });
+    }
+    return [...bySender.values()]
+        .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+        .slice(0, Math.max(0, limit))
+        .map((item) => item.entry);
 }
