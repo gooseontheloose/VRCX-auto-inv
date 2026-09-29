@@ -198,3 +198,138 @@ export function buildPlayersPayload({
         players
     };
 }
+
+// ── AIRI actions (friend requests) ────────────────────────────
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+export const AIRI_ACTION_KINDS = Object.freeze([
+    'friend-request',
+    'friend-accept',
+    'friend-status'
+]);
+
+/**
+ * Limits enforced by VRCX for actions requested by the local AI.
+ * perUser: at most one action of that kind per userId within the window.
+ */
+export const AIRI_ACTION_LIMITS = Object.freeze({
+    'friend-request': Object.freeze({
+        perHour: 10,
+        perDay: 30,
+        perUserWindowMs: DAY_MS
+    }),
+    'friend-accept': Object.freeze({ perHour: 30 }),
+    'friend-status': Object.freeze({ perHour: 120 })
+});
+
+const USER_ID_RE =
+    /^usr_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Strict VRChat user id check: "usr_" followed by a lowercase UUID.
+ * @param {unknown} userId
+ * @returns {boolean}
+ */
+export function isValidAiriUserId(userId) {
+    return typeof userId === 'string' && USER_ID_RE.test(userId);
+}
+
+/**
+ * Keep only well-formed history entries from the last 24 hours.
+ * @param {unknown} history
+ * @param {number} now
+ * @returns {{kind: string, userId: string, at: number}[]}
+ */
+export function pruneActionHistory(history, now) {
+    if (!Array.isArray(history)) {
+        return [];
+    }
+    return history.filter(
+        (entry) =>
+            entry &&
+            typeof entry === 'object' &&
+            AIRI_ACTION_KINDS.includes(entry.kind) &&
+            typeof entry.userId === 'string' &&
+            typeof entry.at === 'number' &&
+            Number.isFinite(entry.at) &&
+            entry.at <= now &&
+            now - entry.at < DAY_MS
+    );
+}
+
+/**
+ * @param {number[]} times ascending
+ * @param {number} limit
+ * @param {number} windowMs
+ * @param {number} now
+ * @returns {number} seconds until a slot frees up, 0 when under the limit
+ */
+function retryAfterSec(times, limit, windowMs, now) {
+    if (times.length < limit) {
+        return 0;
+    }
+    const freesAt = times[times.length - limit] + windowMs;
+    return Math.max(1, Math.ceil((freesAt - now) / 1000));
+}
+
+/**
+ * Decide whether an action may be performed now. Does not record anything.
+ * @param {{kind: string, userId: string, at: number}[]} history
+ * @param {string} kind
+ * @param {string} userId
+ * @param {number} now
+ * @returns {{allowed: true} | {allowed: false, reason: string, retryAfterSec: number}}
+ */
+export function checkActionRateLimit(history, kind, userId, now) {
+    const limits = AIRI_ACTION_LIMITS[kind];
+    if (!limits) {
+        return { allowed: false, reason: 'unknown_action', retryAfterSec: 0 };
+    }
+    const entries = pruneActionHistory(history, now).filter(
+        (entry) => entry.kind === kind
+    );
+    if (limits.perUserWindowMs) {
+        const last = entries
+            .filter(
+                (entry) =>
+                    entry.userId === userId &&
+                    now - entry.at < limits.perUserWindowMs
+            )
+            .reduce((max, entry) => Math.max(max, entry.at), -Infinity);
+        if (last !== -Infinity) {
+            return {
+                allowed: false,
+                reason: 'user_cooldown',
+                retryAfterSec: Math.max(
+                    1,
+                    Math.ceil((last + limits.perUserWindowMs - now) / 1000)
+                )
+            };
+        }
+    }
+    const times = entries.map((entry) => entry.at).sort((a, b) => a - b);
+    if (limits.perDay) {
+        const wait = retryAfterSec(times, limits.perDay, DAY_MS, now);
+        if (wait) {
+            return {
+                allowed: false,
+                reason: 'daily_limit',
+                retryAfterSec: wait
+            };
+        }
+    }
+    if (limits.perHour) {
+        const hourTimes = times.filter((at) => now - at < HOUR_MS);
+        const wait = retryAfterSec(hourTimes, limits.perHour, HOUR_MS, now);
+        if (wait) {
+            return {
+                allowed: false,
+                reason: 'hourly_limit',
+                retryAfterSec: wait
+            };
+        }
+    }
+    return { allowed: true };
+}

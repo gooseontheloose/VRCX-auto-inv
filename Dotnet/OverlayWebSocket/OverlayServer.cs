@@ -36,6 +36,7 @@ public class OverlayServer
             return;
 
         _cancellationToken = new CancellationTokenSource();
+        PawApi.InitToken();
         try
         {
             var listener = new HttpListener();

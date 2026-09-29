@@ -1,4 +1,11 @@
-import { buildPlayersPayload, sanitizeBio } from '../airiIntegration';
+import {
+    AIRI_ACTION_LIMITS,
+    buildPlayersPayload,
+    checkActionRateLimit,
+    isValidAiriUserId,
+    pruneActionHistory,
+    sanitizeBio
+} from '../airiIntegration';
 
 const NOW = Date.UTC(2026, 0, 2, 3, 4, 5);
 
@@ -249,5 +256,166 @@ describe('buildPlayersPayload', () => {
         expect(payload.players).toHaveLength(1);
         expect(payload.players[0].avatarName).toBe('Cat Girl');
         expect(payload.players[0].joinTime).toBeNull();
+    });
+});
+
+const USER_A = 'usr_0f1e2d3c-4b5a-4968-8776-655443322110';
+const USER_B = 'usr_11111111-2222-4333-8444-555555555555';
+const HOUR = 60 * 60 * 1000;
+
+function sentTo(userIds, at, kind = 'friend-request') {
+    return userIds.map((userId, i) => ({
+        kind,
+        userId,
+        at: typeof at === 'function' ? at(i) : at
+    }));
+}
+
+function uniqueUsers(count) {
+    return Array.from(
+        { length: count },
+        (_, i) => `usr_00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+    );
+}
+
+describe('isValidAiriUserId', () => {
+    test('accepts usr_ + lowercase uuid', () => {
+        expect(isValidAiriUserId(USER_A)).toBe(true);
+        expect(isValidAiriUserId(USER_B)).toBe(true);
+    });
+
+    test('rejects everything else', () => {
+        for (const value of [
+            undefined,
+            null,
+            42,
+            {},
+            '',
+            'usr_',
+            'usr_a',
+            USER_A.toUpperCase(),
+            USER_A.replace('usr_', 'grp_'),
+            `${USER_A} `,
+            ` ${USER_A}`,
+            `${USER_A}\n`,
+            `${USER_A}x`,
+            USER_A.replace(/-/g, ''),
+            'usr_0f1e2d3c-4b5a-4968-8776-65544332211g',
+            "usr_0f1e2d3c-4b5a-4968-8776-655443322110');alert(1)//",
+            '8JoV9XEdpo'
+        ]) {
+            expect(isValidAiriUserId(value)).toBe(false);
+        }
+    });
+});
+
+describe('pruneActionHistory', () => {
+    test('drops malformed, future and older-than-24h entries', () => {
+        const history = [
+            { kind: 'friend-request', userId: USER_A, at: NOW - HOUR },
+            { kind: 'friend-request', userId: USER_A, at: NOW - 25 * HOUR },
+            { kind: 'friend-request', userId: USER_A, at: NOW + 1000 },
+            { kind: 'nope', userId: USER_A, at: NOW },
+            { kind: 'friend-accept', userId: 5, at: NOW },
+            { kind: 'friend-accept', userId: USER_B, at: 'x' },
+            null
+        ];
+        expect(pruneActionHistory(history, NOW)).toEqual([history[0]]);
+        expect(pruneActionHistory('nope', NOW)).toEqual([]);
+    });
+});
+
+describe('checkActionRateLimit', () => {
+    test('allows the first request', () => {
+        expect(checkActionRateLimit([], 'friend-request', USER_A, NOW)).toEqual(
+            { allowed: true }
+        );
+    });
+
+    test('only one friend request per user per 24 hours', () => {
+        const history = sentTo([USER_A], NOW - 23 * HOUR);
+        const result = checkActionRateLimit(
+            history,
+            'friend-request',
+            USER_A,
+            NOW
+        );
+        expect(result).toEqual({
+            allowed: false,
+            reason: 'user_cooldown',
+            retryAfterSec: 3600
+        });
+        expect(
+            checkActionRateLimit(history, 'friend-request', USER_B, NOW).allowed
+        ).toBe(true);
+        expect(
+            checkActionRateLimit(
+                sentTo([USER_A], NOW - 24 * HOUR),
+                'friend-request',
+                USER_A,
+                NOW
+            ).allowed
+        ).toBe(true);
+    });
+
+    test('max 10 friend requests per hour', () => {
+        const nine = sentTo(uniqueUsers(9), (i) => NOW - 50 * 60 * 1000 + i);
+        expect(
+            checkActionRateLimit(nine, 'friend-request', USER_A, NOW).allowed
+        ).toBe(true);
+        const ten = sentTo(uniqueUsers(10), (i) => NOW - 50 * 60 * 1000 + i);
+        const result = checkActionRateLimit(ten, 'friend-request', USER_A, NOW);
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toBe('hourly_limit');
+        expect(result.retryAfterSec).toBe(600);
+    });
+
+    test('max 30 friend requests per day', () => {
+        // 30 requests spread over the last 20 hours, at most 2 per hour.
+        const history = sentTo(
+            uniqueUsers(30),
+            (i) => NOW - 20 * HOUR + i * 40 * 60 * 1000
+        );
+        const hourly = history.filter((e) => NOW - e.at < HOUR).length;
+        expect(hourly).toBeLessThan(
+            AIRI_ACTION_LIMITS['friend-request'].perHour
+        );
+        const result = checkActionRateLimit(
+            history,
+            'friend-request',
+            USER_A,
+            NOW
+        );
+        expect(result).toEqual({
+            allowed: false,
+            reason: 'daily_limit',
+            retryAfterSec: 4 * 3600
+        });
+    });
+
+    test('accepts: max 30 per hour, no per-user cooldown', () => {
+        const users = uniqueUsers(29);
+        const accepts = sentTo(users, NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(accepts, 'friend-accept', users[0], NOW)
+                .allowed
+        ).toBe(true);
+        const full = sentTo(uniqueUsers(30), NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(full, 'friend-accept', USER_A, NOW).reason
+        ).toBe('hourly_limit');
+    });
+
+    test('kinds are counted separately', () => {
+        const accepts = sentTo(uniqueUsers(30), NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(accepts, 'friend-request', USER_A, NOW).allowed
+        ).toBe(true);
+    });
+
+    test('unknown kinds are refused', () => {
+        expect(checkActionRateLimit([], 'unfriend', USER_A, NOW).allowed).toBe(
+            false
+        );
     });
 });

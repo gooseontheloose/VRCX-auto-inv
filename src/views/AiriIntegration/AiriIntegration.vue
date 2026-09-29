@@ -50,6 +50,22 @@
                     </div>
                     <Switch :model-value="airiStore.fetchGroups" @update:modelValue="airiStore.setFetchGroups" />
                 </div>
+                <div class="flex items-center justify-between gap-4 border-t pt-3">
+                    <div class="min-w-0">
+                        <div class="text-sm font-medium">{{ t('view.airi_integration.actions_enable') }}</div>
+                        <div class="text-xs text-muted-foreground">
+                            {{ t('view.airi_integration.actions_enable_description') }}
+                        </div>
+                        <div class="text-xs text-muted-foreground mt-1">
+                            {{ t('view.airi_integration.actions_token_note') }}
+                            <code class="bg-muted px-1 rounded select-all">{{ TOKEN_PATH }}</code>
+                        </div>
+                        <div v-if="airiStore.actionsEnabled && !airiStore.enabled" class="text-xs text-amber-500 mt-1">
+                            {{ t('view.airi_integration.actions_needs_integration') }}
+                        </div>
+                    </div>
+                    <Switch :model-value="airiStore.actionsEnabled" @update:modelValue="airiStore.setActionsEnabled" />
+                </div>
             </div>
 
             <!-- Endpoint + stats -->
@@ -92,6 +108,56 @@
                     <dt class="text-muted-foreground">{{ t('view.airi_integration.stats_groups_fetched') }}</dt>
                     <dd>{{ airiStore.groupFetchCount }} / 100</dd>
                 </dl>
+            </div>
+        </div>
+
+        <!-- Recent AIRI actions -->
+        <div class="border rounded-lg p-4 space-y-3">
+            <h3 class="font-semibold flex items-center gap-2">
+                <UserPlus class="size-4 text-primary" /> {{ t('view.airi_integration.actions_recent_header') }}
+                <Badge :variant="airiStore.enabled && airiStore.actionsEnabled ? 'default' : 'secondary'" class="ml-1">
+                    {{
+                        airiStore.enabled && airiStore.actionsEnabled
+                            ? t('view.airi_integration.status_on')
+                            : t('view.airi_integration.status_off')
+                    }}
+                </Badge>
+            </h3>
+            <p class="text-xs text-muted-foreground">{{ t('view.airi_integration.actions_recent_description') }}</p>
+            <div v-if="!airiStore.actionLog.length" class="text-sm text-muted-foreground text-center py-3">
+                {{ t('view.airi_integration.actions_recent_empty') }}
+            </div>
+            <div v-else class="border rounded-lg overflow-auto max-h-80">
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>{{ t('view.airi_integration.column_time') }}</TableHead>
+                            <TableHead>{{ t('view.airi_integration.column_action') }}</TableHead>
+                            <TableHead>{{ t('view.airi_integration.column_player') }}</TableHead>
+                            <TableHead>{{ t('view.airi_integration.column_result') }}</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        <TableRow
+                            v-for="entry in airiStore.actionLog"
+                            :key="`${entry.at}-${entry.kind}-${entry.userId}`">
+                            <TableCell class="text-xs whitespace-nowrap">
+                                {{ new Date(entry.at).toLocaleString() }}
+                            </TableCell>
+                            <TableCell class="text-xs">{{ entry.kind }}</TableCell>
+                            <TableCell>
+                                <div class="font-medium">{{ entry.displayName }}</div>
+                                <div class="text-xs text-muted-foreground font-mono">{{ entry.userId }}</div>
+                            </TableCell>
+                            <TableCell class="text-xs">
+                                <Badge :variant="entry.status === 200 ? 'outline' : 'destructive'">
+                                    {{ entry.status }}
+                                </Badge>
+                                {{ entry.result }}
+                            </TableCell>
+                        </TableRow>
+                    </TableBody>
+                </Table>
             </div>
         </div>
 
@@ -184,7 +250,7 @@
 <script setup>
     import { computed, onBeforeUnmount, ref } from 'vue';
     import { useI18n } from 'vue-i18n';
-    import { Activity, Bot, Braces, Check, Copy, Eye, Plug, Settings2, ShieldCheck } from 'lucide-vue-next';
+    import { Activity, Bot, Braces, Check, Copy, Eye, Plug, Settings2, ShieldCheck, UserPlus } from 'lucide-vue-next';
 
     import { Badge } from '@/components/ui/badge';
     import { Button } from '@/components/ui/button';
@@ -193,6 +259,7 @@
     import { useAiriIntegrationStore } from '@/stores/airiIntegration';
 
     const ENDPOINT_URL = 'http://127.0.0.1:34582/paw/players';
+    const TOKEN_PATH = '%APPDATA%\\VRCX\\paw-airi-token.txt';
     const REFRESH_MS = 2000;
 
     const { t } = useI18n();

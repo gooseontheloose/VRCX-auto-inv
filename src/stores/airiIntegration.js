@@ -1,10 +1,28 @@
 import { reactive, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 
-import { buildPlayersPayload } from '../shared/utils/airiIntegration';
-import { queryRequest, userRequest } from '../api';
+import {
+    AIRI_ACTION_KINDS,
+    buildPlayersPayload,
+    checkActionRateLimit,
+    isValidAiriUserId,
+    pruneActionHistory
+} from '../shared/utils/airiIntegration';
+import {
+    friendRequest,
+    notificationRequest,
+    queryRequest,
+    userRequest
+} from '../api';
+import {
+    getFriendRequest,
+    handleFriendStatus
+} from '../coordinators/friendRelationshipCoordinator';
+import { database } from '../services/database';
+import { useFriendStore } from './friend';
 import { useGameLogStore } from './gameLog';
 import { useLocationStore } from './location';
+import { useNotificationStore } from './notification';
 import { useUserStore } from './user';
 import { watchState } from '../services/watchState';
 
@@ -22,8 +40,13 @@ const PROFILE_FETCH_SESSION_CAP = 150;
 const CONFIG_KEYS = {
     enabled: 'PAW_airiIntegration_enabled',
     shareBios: 'PAW_airiIntegration_shareBios',
-    fetchGroups: 'PAW_airiIntegration_fetchGroups'
+    fetchGroups: 'PAW_airiIntegration_fetchGroups',
+    actionsEnabled: 'PAW_airiIntegration_actionsEnabled',
+    actionHistory: 'PAW_airiIntegration_actionHistory'
 };
+
+/** Entries kept in the "recent AIRI actions" list. */
+const ACTION_LOG_MAX = 25;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -41,6 +64,15 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     const enabled = ref(false);
     const shareBios = ref(true);
     const fetchGroups = ref(false);
+    const actionsEnabled = ref(false);
+
+    // ── Actions (friend requests) ──────────────────────────────
+    /** Persisted rate-limit history: {kind, userId, at}[] (last 24 h). */
+    let actionHistory = [];
+    /** Recent actions shown on the AIRI Integration page (newest first). */
+    const actionLog = ref([]);
+    /** Serializes actions so rate-limit checks and records never race. */
+    let actionChain = Promise.resolve();
 
     // ── In-memory stats ────────────────────────────────────────
     const requestCount = ref(0);
@@ -70,16 +102,42 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     let isSettingsLoaded = false;
 
     async function loadSettings() {
-        const [enabledConfig, shareBiosConfig, fetchGroupsConfig] =
-            await Promise.all([
-                configRepository.getBool(CONFIG_KEYS.enabled, false),
-                configRepository.getBool(CONFIG_KEYS.shareBios, true),
-                configRepository.getBool(CONFIG_KEYS.fetchGroups, false)
-            ]);
+        const [
+            enabledConfig,
+            shareBiosConfig,
+            fetchGroupsConfig,
+            actionsEnabledConfig,
+            actionHistoryConfig
+        ] = await Promise.all([
+            configRepository.getBool(CONFIG_KEYS.enabled, false),
+            configRepository.getBool(CONFIG_KEYS.shareBios, true),
+            configRepository.getBool(CONFIG_KEYS.fetchGroups, false),
+            configRepository.getBool(CONFIG_KEYS.actionsEnabled, false),
+            configRepository.getString(CONFIG_KEYS.actionHistory, '[]')
+        ]);
         enabled.value = Boolean(enabledConfig);
         shareBios.value = Boolean(shareBiosConfig);
         fetchGroups.value = Boolean(fetchGroupsConfig);
+        actionsEnabled.value = Boolean(actionsEnabledConfig);
+        try {
+            actionHistory = pruneActionHistory(
+                JSON.parse(actionHistoryConfig || '[]'),
+                Date.now()
+            );
+        } catch {
+            actionHistory = [];
+        }
         isSettingsLoaded = true;
+    }
+
+    function setActionsEnabled(value) {
+        actionsEnabled.value = Boolean(value);
+        if (isSettingsLoaded) {
+            configRepository.setBool(
+                CONFIG_KEYS.actionsEnabled,
+                actionsEnabled.value
+            );
+        }
     }
 
     function setEnabled(value) {
@@ -155,7 +213,278 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         const playerCount = enabled.value
             ? (locationStore.lastLocation?.playerList?.size ?? 0)
             : 0;
-        return JSON.stringify({ enabled: enabled.value, playerCount });
+        return JSON.stringify({
+            enabled: enabled.value,
+            actionsEnabled: enabled.value && actionsEnabled.value,
+            playerCount
+        });
+    }
+
+    // ── Actions ────────────────────────────────────────────────
+
+    function actionResponse(status, body) {
+        return JSON.stringify({ status, body });
+    }
+
+    function saveActionHistory() {
+        configRepository
+            .setString(CONFIG_KEYS.actionHistory, JSON.stringify(actionHistory))
+            .catch((err) =>
+                console.warn('[AiriIntegration] saving history failed', err)
+            );
+    }
+
+    /**
+     * Count an action against the rate limits (called right before the
+     * VRChat API call that performs it).
+     */
+    function recordAction(kind, userId) {
+        const now = Date.now();
+        actionHistory = pruneActionHistory(actionHistory, now);
+        actionHistory.push({ kind, userId, at: now });
+        saveActionHistory();
+    }
+
+    function logAction(kind, userId, displayName, result, status) {
+        const at = Date.now();
+        console.log(
+            `[AiriIntegration] ${new Date(at).toISOString()} action=${kind} userId=${userId} displayName=${JSON.stringify(displayName || '')} result=${result} status=${status}`
+        );
+        if (kind === 'friend-status') {
+            return;
+        }
+        actionLog.value = [
+            { at, kind, userId, displayName, result, status },
+            ...actionLog.value
+        ].slice(0, ACTION_LOG_MAX);
+    }
+
+    function cachedDisplayName(userId) {
+        const cached = userStore.cachedUsers.get(userId);
+        return typeof cached?.displayName === 'string'
+            ? cached.displayName
+            : '';
+    }
+
+    async function resolveDisplayName(userId) {
+        const cached = cachedDisplayName(userId);
+        if (cached) {
+            return cached;
+        }
+        try {
+            const args = await userRequest.getUser({ userId });
+            return typeof args?.json?.displayName === 'string'
+                ? args.json.displayName
+                : '';
+        } catch {
+            return '';
+        }
+    }
+
+    async function fetchFriendStatus(userId) {
+        const args = await friendRequest.getFriendStatus({
+            userId,
+            currentUserId: userStore.currentUser.id
+        });
+        handleFriendStatus(args);
+        return {
+            isFriend: Boolean(args.json?.isFriend),
+            outgoingPending: Boolean(args.json?.outgoingRequest),
+            incomingPending: Boolean(args.json?.incomingRequest)
+        };
+    }
+
+    /** Same friend-log bookkeeping VRCX does after "Send Friend Request". */
+    function addFriendRequestLog(userId, displayName) {
+        const friendLogHistory = {
+            created_at: new Date().toJSON(),
+            type: 'FriendRequest',
+            userId,
+            displayName: displayName || userId
+        };
+        useFriendStore().friendLogTable.data.push(friendLogHistory);
+        database.addFriendLogHistory(friendLogHistory);
+    }
+
+    function rateLimited(limit) {
+        return [
+            429,
+            {
+                ok: false,
+                error: 'rate_limited',
+                reason: limit.reason,
+                retryAfterSec: limit.retryAfterSec
+            }
+        ];
+    }
+
+    async function runFriendStatus(userId) {
+        const limit = checkActionRateLimit(
+            actionHistory,
+            'friend-status',
+            userId,
+            Date.now()
+        );
+        if (!limit.allowed) {
+            return rateLimited(limit);
+        }
+        recordAction('friend-status', userId);
+        const status = await fetchFriendStatus(userId);
+        return [200, { ok: true, userId, ...status }];
+    }
+
+    async function runFriendRequest(userId) {
+        if (useFriendStore().friends.has(userId)) {
+            return [200, { ok: false, result: 'already_friends' }];
+        }
+        const limit = checkActionRateLimit(
+            actionHistory,
+            'friend-request',
+            userId,
+            Date.now()
+        );
+        if (!limit.allowed) {
+            return rateLimited(limit);
+        }
+        const status = await fetchFriendStatus(userId);
+        if (status.isFriend) {
+            return [200, { ok: false, result: 'already_friends' }];
+        }
+        if (status.outgoingPending) {
+            return [200, { ok: false, result: 'already_pending' }];
+        }
+        if (status.incomingPending) {
+            // They already asked us; accepting is a separate, explicit action.
+            return [200, { ok: false, result: 'incoming_pending' }];
+        }
+        recordAction('friend-request', userId);
+        await friendRequest.sendFriendRequest({ userId });
+        addFriendRequestLog(userId, await resolveDisplayName(userId));
+        return [200, { ok: true, result: 'sent' }];
+    }
+
+    async function runFriendAccept(userId) {
+        if (useFriendStore().friends.has(userId)) {
+            return [200, { ok: false, result: 'already_friends' }];
+        }
+        const limit = checkActionRateLimit(
+            actionHistory,
+            'friend-accept',
+            userId,
+            Date.now()
+        );
+        if (!limit.allowed) {
+            return rateLimited(limit);
+        }
+        const notificationStore = useNotificationStore();
+        const notificationId = getFriendRequest(userId);
+        if (notificationId) {
+            recordAction('friend-accept', userId);
+            try {
+                const args =
+                    await notificationRequest.acceptFriendRequestNotification({
+                        notificationId
+                    });
+                notificationStore.handleNotificationAccept(args);
+                return [200, { ok: true, result: 'accepted' }];
+            } catch (err) {
+                if (err?.message?.includes('404')) {
+                    notificationStore.handleNotificationHide(notificationId);
+                    return [200, { ok: false, result: 'no_pending_request' }];
+                }
+                throw err;
+            }
+        }
+        // No notification loaded: VRCX's own "Accept Friend Request" command
+        // falls back to sending a request, which accepts a pending incoming one.
+        const status = await fetchFriendStatus(userId);
+        if (status.isFriend) {
+            return [200, { ok: false, result: 'already_friends' }];
+        }
+        if (!status.incomingPending) {
+            return [200, { ok: false, result: 'no_pending_request' }];
+        }
+        recordAction('friend-accept', userId);
+        await friendRequest.sendFriendRequest({ userId });
+        addFriendRequestLog(userId, await resolveDisplayName(userId));
+        return [200, { ok: true, result: 'accepted' }];
+    }
+
+    async function runAction(kind, userId) {
+        if (!enabled.value || !actionsEnabled.value) {
+            return [
+                403,
+                {
+                    enabled: enabled.value,
+                    actionsEnabled: false,
+                    error: 'actions_disabled'
+                }
+            ];
+        }
+        if (!AIRI_ACTION_KINDS.includes(kind)) {
+            return [404, { ok: false, error: 'not_found' }];
+        }
+        if (!isValidAiriUserId(userId)) {
+            return [400, { ok: false, error: 'invalid_user_id' }];
+        }
+        if (!watchState.isLoggedIn || !userStore.currentUser?.id) {
+            return [503, { ok: false, error: 'not_logged_in' }];
+        }
+        if (userId === userStore.currentUser.id) {
+            return [400, { ok: false, error: 'self_not_allowed' }];
+        }
+        try {
+            if (kind === 'friend-status') {
+                return await runFriendStatus(userId);
+            }
+            if (kind === 'friend-request') {
+                return await runFriendRequest(userId);
+            }
+            return await runFriendAccept(userId);
+        } catch (err) {
+            return [
+                502,
+                {
+                    ok: false,
+                    error: 'vrchat_error',
+                    message: String(err?.message ?? err).slice(0, 200)
+                }
+            ];
+        }
+    }
+
+    /**
+     * Called by the C# host for POST /paw/friend-request, POST
+     * /paw/friend-accept and GET /paw/friend-status (after it checked the
+     * X-Paw-Token header). Actions run one at a time.
+     * @param {string} kind
+     * @param {string} userId
+     * @returns {Promise<string>} JSON {status, body}
+     */
+    function handleActionRequest(kind, userId) {
+        const run = actionChain.then(async () => {
+            const [status, body] = await runAction(kind, userId);
+            const safeUserId = isValidAiriUserId(userId) ? userId : '';
+            const displayName = safeUserId ? cachedDisplayName(safeUserId) : '';
+            if (status === 200) {
+                body.userId = safeUserId;
+                body.displayName = displayName;
+            }
+            let result = body.result || body.error || 'ok';
+            if (body.reason) {
+                result += `:${body.reason}`;
+            }
+            logAction(
+                kind,
+                safeUserId || 'invalid',
+                displayName,
+                result,
+                status
+            );
+            return actionResponse(status, body);
+        });
+        actionChain = run.catch(() => {});
+        return run;
     }
 
     /**
@@ -356,6 +685,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         enabled,
         shareBios,
         fetchGroups,
+        actionsEnabled,
+        actionLog,
         requestCount,
         lastRequestAt,
         lastPlayerCount,
@@ -366,9 +697,11 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         setEnabled,
         setShareBios,
         setFetchGroups,
+        setActionsEnabled,
         buildPayload,
         getPlayersJson,
         getStatusJson,
+        handleActionRequest,
         handlePlayerJoined,
         enqueueCurrentPlayers
     };
