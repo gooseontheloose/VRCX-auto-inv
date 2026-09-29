@@ -125,6 +125,89 @@ function pickGroup(group) {
 }
 
 /**
+ * VRC+ from a cached profile (its tags) or, for players VRCX has no full
+ * profile for, from the AIRI lookup cache. Profile icons are free for
+ * everyone since VRChat 2026.3.1, so the "system_supporter" tag is the only
+ * reliable VRC+ signal.
+ * @param {any} profile core cachedUsers entry
+ * @param {any} extra AIRI lookup cache entry ({isVRCPlus?: boolean|null})
+ * @returns {{isVRCPlus: boolean, vrcPlusKnown: boolean}}
+ */
+function vrcPlusOf(profile, extra) {
+    if (Array.isArray(profile?.tags)) {
+        return {
+            isVRCPlus:
+                typeof profile.$isVRCPlus === 'boolean'
+                    ? profile.$isVRCPlus
+                    : profile.tags.includes('system_supporter'),
+            vrcPlusKnown: true
+        };
+    }
+    if (typeof extra?.isVRCPlus === 'boolean') {
+        return { isVRCPlus: extra.isVRCPlus, vrcPlusKnown: true };
+    }
+    return { isVRCPlus: Boolean(profile?.$isVRCPlus), vrcPlusKnown: false };
+}
+
+/**
+ * One whitelisted player entry.
+ * @param {{
+ *   userId: string,
+ *   entry?: any,
+ *   profile?: any,
+ *   extra?: any,
+ *   group?: any,
+ *   avatarNames?: Map<string, string> | Record<string, string>,
+ *   shareBios?: boolean,
+ *   fetchGroups?: boolean
+ * }} params
+ * @returns {Record<string, any>}
+ */
+export function buildPlayerEntry({
+    userId,
+    entry,
+    profile,
+    extra,
+    group,
+    avatarNames,
+    shareBios = false,
+    fetchGroups = false
+}) {
+    const displayName = str(entry?.displayName) || str(profile?.displayName);
+    const avatarName = lookup(avatarNames, displayName);
+    const vrcPlus = vrcPlusOf(profile, extra);
+
+    /** @type {Record<string, any>} */
+    const player = {
+        userId: str(userId),
+        displayName,
+        joinTime:
+            typeof entry?.joinTime === 'number' &&
+            Number.isFinite(entry.joinTime)
+                ? entry.joinTime
+                : null,
+        isFriend: Boolean(profile?.isFriend),
+        trustLevel: str(profile?.$trustLevel),
+        isVRCPlus: vrcPlus.isVRCPlus,
+        vrcPlusKnown: vrcPlus.vrcPlusKnown,
+        platform: str(profile?.last_platform),
+        avatarName: str(avatarName),
+        status: str(profile?.status),
+        statusDescription: str(profile?.statusDescription)
+    };
+    if (shareBios) {
+        player.bio = sanitizeBio(str(profile?.bio) || str(extra?.bio));
+    }
+    if (fetchGroups) {
+        const picked = pickGroup(group);
+        if (picked) {
+            player.representedGroup = picked;
+        }
+    }
+    return player;
+}
+
+/**
  * Build the JSON-safe payload shared with the local AI companion.
  * @param {{
  *   location?: string,
@@ -133,6 +216,7 @@ function pickGroup(group) {
  *   cachedUsers?: Map<string, any> | Record<string, any>,
  *   avatarNames?: Map<string, string> | Record<string, string>,
  *   groupsByUserId?: Map<string, any> | Record<string, any>,
+ *   profileCache?: Map<string, any> | Record<string, any>,
  *   settings?: { shareBios?: boolean, fetchGroups?: boolean },
  *   now?: number
  * }} params
@@ -144,6 +228,7 @@ export function buildPlayersPayload({
     cachedUsers,
     avatarNames,
     groupsByUserId,
+    profileCache,
     settings,
     now
 } = {}) {
@@ -154,38 +239,16 @@ export function buildPlayersPayload({
         .filter((entry) => entry && typeof entry === 'object')
         .map((entry) => {
             const userId = str(entry.userId);
-            const profile = lookup(cachedUsers, userId);
-            const displayName =
-                str(entry.displayName) || str(profile?.displayName);
-            const avatarName = lookup(avatarNames, displayName);
-
-            /** @type {Record<string, any>} */
-            const player = {
+            return buildPlayerEntry({
                 userId,
-                displayName,
-                joinTime:
-                    typeof entry.joinTime === 'number' &&
-                    Number.isFinite(entry.joinTime)
-                        ? entry.joinTime
-                        : null,
-                isFriend: Boolean(profile?.isFriend),
-                trustLevel: str(profile?.$trustLevel),
-                isVRCPlus: Boolean(profile?.$isVRCPlus),
-                platform: str(profile?.last_platform),
-                avatarName: str(avatarName),
-                status: str(profile?.status),
-                statusDescription: str(profile?.statusDescription)
-            };
-            if (shareBios) {
-                player.bio = sanitizeBio(profile?.bio);
-            }
-            if (fetchGroups) {
-                const group = pickGroup(lookup(groupsByUserId, userId));
-                if (group) {
-                    player.representedGroup = group;
-                }
-            }
-            return player;
+                entry,
+                profile: lookup(cachedUsers, userId),
+                extra: lookup(profileCache, userId),
+                group: lookup(groupsByUserId, userId),
+                avatarNames,
+                shareBios,
+                fetchGroups
+            });
         });
 
     return {
@@ -221,10 +284,49 @@ export const AIRI_ACTION_LIMITS = Object.freeze({
         perDay: 30,
         perUserWindowMs: DAY_MS
     }),
-    'friend-accept': Object.freeze({ perHour: 30 }),
+    'friend-accept': Object.freeze({ perHour: 60 }),
     'friend-status': Object.freeze({ perHour: 120 }),
     'friend-requests': Object.freeze({ perHour: 120 })
 });
+
+/** Choices for the "accepts per hour" setting (friend-accept perHour). */
+export const AIRI_ACCEPT_PER_HOUR_OPTIONS = Object.freeze([30, 60, 90, 120]);
+export const AIRI_ACCEPT_PER_HOUR_DEFAULT =
+    AIRI_ACTION_LIMITS['friend-accept'].perHour;
+
+/**
+ * Only these kinds are written to the config file. The others only guard
+ * against request loops while VRCX runs and stay in memory.
+ */
+export const AIRI_PERSISTED_ACTION_KINDS = Object.freeze([
+    'friend-request',
+    'friend-accept'
+]);
+
+/**
+ * @param {unknown} value
+ * @returns {number} a valid accepts-per-hour choice
+ */
+export function normalizeAcceptPerHour(value) {
+    const n = Number(value);
+    return AIRI_ACCEPT_PER_HOUR_OPTIONS.includes(n)
+        ? n
+        : AIRI_ACCEPT_PER_HOUR_DEFAULT;
+}
+
+/**
+ * The action limits with the user's accepts-per-hour setting applied.
+ * @param {{acceptPerHour?: number}} [overrides]
+ */
+export function resolveActionLimits(overrides = {}) {
+    return Object.freeze({
+        ...AIRI_ACTION_LIMITS,
+        'friend-accept': Object.freeze({
+            ...AIRI_ACTION_LIMITS['friend-accept'],
+            perHour: normalizeAcceptPerHour(overrides.acceptPerHour)
+        })
+    });
+}
 
 /** Max entries returned by GET /paw/friend-requests. */
 export const AIRI_FRIEND_REQUESTS_MAX = 50;
@@ -285,10 +387,17 @@ function retryAfterSec(times, limit, windowMs, now) {
  * @param {string} kind
  * @param {string} userId
  * @param {number} now
+ * @param {Record<string, {perHour?: number, perDay?: number, perUserWindowMs?: number}>} [allLimits]
  * @returns {{allowed: true} | {allowed: false, reason: string, retryAfterSec: number}}
  */
-export function checkActionRateLimit(history, kind, userId, now) {
-    const limits = AIRI_ACTION_LIMITS[kind];
+export function checkActionRateLimit(
+    history,
+    kind,
+    userId,
+    now,
+    allLimits = AIRI_ACTION_LIMITS
+) {
+    const limits = allLimits[kind];
     if (!limits) {
         return { allowed: false, reason: 'unknown_action', retryAfterSec: 0 };
     }
@@ -340,22 +449,66 @@ export function checkActionRateLimit(history, kind, userId, now) {
 }
 
 /**
+ * Remaining friend-action budget per kind (for /paw/status and the page).
+ * @param {{kind: string, userId: string, at: number}[]} history
+ * @param {number} now
+ * @param {Record<string, {perHour?: number, perDay?: number}>} [allLimits]
+ * @returns {Record<string, {usedHour: number, perHour: number|null, remainingHour: number|null, usedDay: number, perDay: number|null, remainingDay: number|null}>}
+ */
+export function computeActionBudget(
+    history,
+    now,
+    allLimits = AIRI_ACTION_LIMITS
+) {
+    const entries = pruneActionHistory(history, now);
+    /** @type {Record<string, any>} */
+    const budget = {};
+    for (const kind of AIRI_ACTION_KINDS) {
+        const limits = allLimits[kind] ?? {};
+        const ofKind = entries.filter((entry) => entry.kind === kind);
+        const usedHour = ofKind.filter(
+            (entry) => now - entry.at < HOUR_MS
+        ).length;
+        const usedDay = ofKind.length;
+        budget[kind] = {
+            usedHour,
+            perHour: limits.perHour ?? null,
+            remainingHour: limits.perHour
+                ? Math.max(0, limits.perHour - usedHour)
+                : null,
+            usedDay,
+            perDay: limits.perDay ?? null,
+            remainingDay: limits.perDay
+                ? Math.max(0, limits.perDay - usedDay)
+                : null
+        };
+    }
+    return budget;
+}
+
+/**
  * Incoming pending friend requests from VRCX's notification table
  * (type "friendRequest", filled by VRCX's own notification refresh and
- * websocket). One entry per sender, newest first, capped.
+ * websocket). One entry per sender, capped.
+ *
+ * Order: newest first by default. With `isPresent`, senders in the current
+ * instance come first, then everyone else, each group oldest first (so a
+ * backlog is worked through fairly), and every entry carries `inLobby`.
  * @param {unknown} notifications notificationTable.data
  * @param {object} [options]
  * @param {string} [options.currentUserId] requests sent by this user are skipped
  * @param {{has: (userId: string) => boolean}} [options.friendIds] senders already friends are skipped
  * @param {(userId: string) => string} [options.displayNameFor] fallback name lookup
+ * @param {(userId: string) => boolean} [options.isPresent] sender is in the current instance
  * @param {number} [options.limit]
- * @returns {{userId: string, displayName: string, createdAt: string|null}[]}
+ * @returns {{userId: string, displayName: string, createdAt: string|null, inLobby?: boolean}[]}
  */
 export function buildIncomingFriendRequests(notifications, options = {}) {
     const {
         currentUserId = '',
         friendIds = null,
         displayNameFor = null,
+        isPresent = null,
         limit = AIRI_FRIEND_REQUESTS_MAX
     } = options;
     if (!Array.isArray(notifications)) {
@@ -394,8 +547,101 @@ export function buildIncomingFriendRequests(notifications, options = {}) {
             }
         });
     }
-    return [...bySender.values()]
-        .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
-        .slice(0, Math.max(0, limit))
-        .map((item) => item.entry);
+    const items = [...bySender.values()];
+    if (typeof isPresent === 'function') {
+        for (const item of items) {
+            item.entry.inLobby = Boolean(isPresent(item.entry.userId));
+        }
+        // Unknown dates sort last within their group.
+        const oldest = (item) => item.ts ?? Number.MAX_SAFE_INTEGER;
+        items.sort(
+            (a, b) =>
+                Number(b.entry.inLobby) - Number(a.entry.inLobby) ||
+                oldest(a) - oldest(b)
+        );
+    } else {
+        items.sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+    }
+    return items.slice(0, Math.max(0, limit)).map((item) => item.entry);
+}
+
+// ── AIRI lookup cache (represented group / bio) ──────────────
+
+/** Represented groups are fetched again after this long. */
+export const AIRI_GROUP_TTL_MS = 5 * DAY_MS;
+/** Bios (and the VRC+ flag fetched with them) are fetched again after this long. */
+export const AIRI_BIO_TTL_MS = DAY_MS;
+/** Entries kept in memory (least recently used are evicted first). */
+export const AIRI_USER_CACHE_MAX = 20000;
+/** Rows kept in the database table. */
+export const AIRI_USER_CACHE_DB_MAX = 50000;
+/** Rows not seen for this long are deleted from the database. */
+export const AIRI_USER_CACHE_DB_MAX_AGE_MS = 90 * DAY_MS;
+
+/**
+ * @param {number|null|undefined} fetchedAt
+ * @param {number} ttlMs
+ * @param {number} now
+ * @returns {boolean}
+ */
+export function isCacheFresh(fetchedAt, ttlMs, now) {
+    return (
+        typeof fetchedAt === 'number' &&
+        fetchedAt > 0 &&
+        fetchedAt <= now &&
+        now - fetchedAt < ttlMs
+    );
+}
+
+/**
+ * Small LRU map: get() refreshes an entry, set() evicts the least recently
+ * used entries above `max`.
+ * @param {number} max
+ */
+export function createLruMap(max) {
+    /** @type {Map<string, any>} */
+    const map = new Map();
+    return {
+        /** @param {string} key */
+        get(key) {
+            const value = map.get(key);
+            if (value !== undefined) {
+                map.delete(key);
+                map.set(key, value);
+            }
+            return value;
+        },
+        /**
+         * Read without refreshing the entry.
+         * @param {string} key
+         */
+        peek(key) {
+            return map.get(key);
+        },
+        /**
+         * @param {string} key
+         * @param {any} value
+         */
+        set(key, value) {
+            map.delete(key);
+            map.set(key, value);
+            while (map.size > max) {
+                map.delete(map.keys().next().value);
+            }
+        },
+        /** @param {string} key */
+        has(key) {
+            return map.has(key);
+        },
+        /** @param {string} key */
+        delete(key) {
+            return map.delete(key);
+        },
+        clear() {
+            map.clear();
+        },
+        get size() {
+            return map.size;
+        }
+    };
 }

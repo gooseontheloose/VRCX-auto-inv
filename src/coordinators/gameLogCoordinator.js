@@ -280,13 +280,11 @@ export function addGameLogEntry(gameLog, location) {
                     groupInviteStore.handlePlayerJoined(userId, gameLog.displayName);
                 }
             }
-            // AIRI integration hook: throttled represented-group lookup (opt-in)
+            // AIRI integration hook: paced group/bio lookups (opt-in; the
+            // store checks the fetchGroups and shareBios settings itself)
             {
                 const airiIntegrationStore = useAiriIntegrationStore();
-                if (
-                    airiIntegrationStore.enabled &&
-                    airiIntegrationStore.fetchGroups
-                ) {
+                if (airiIntegrationStore.enabled) {
                     airiIntegrationStore.handlePlayerJoined(userId);
                 }
             }

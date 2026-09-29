@@ -19,7 +19,10 @@ const mocks = vi.hoisted(() => ({
     refreshNotifications: vi.fn(),
     addFriendship: vi.fn(),
     friendLogCurrent: new Map(),
-    notifications: []
+    notifications: [],
+    notificationState: { isNotificationsLoading: false },
+    groupInvite: { rateLimitCooldownUntil: 0 },
+    lastLocation: null
 }));
 
 vi.mock('../../services/config', () => ({
@@ -37,6 +40,17 @@ vi.mock('../../services/config', () => ({
 vi.mock('../../services/watchState', () => ({ watchState: mocks.watchState }));
 vi.mock('../../services/database', () => ({
     database: { addFriendLogHistory: vi.fn() }
+}));
+vi.mock('../../services/database/airiUserCache', () => ({
+    airiUserCache: {
+        initAiriUserCache: vi.fn(async () => {}),
+        pruneAiriUserCache: vi.fn(async () => {}),
+        loadAiriUserCache: vi.fn(async () => []),
+        saveAiriUserCacheEntry: vi.fn(async () => {})
+    }
+}));
+vi.mock('../groupInvite', () => ({
+    useGroupInviteStore: () => mocks.groupInvite
 }));
 vi.mock('../../api', () => ({
     friendRequest: {
@@ -67,7 +81,9 @@ vi.mock('../notification', () => ({
         handleNotificationAccept: mocks.handleNotificationAccept,
         handleNotificationHide: mocks.handleNotificationHide,
         notificationTable: { data: mocks.notifications },
-        isNotificationsLoading: false,
+        get isNotificationsLoading() {
+            return mocks.notificationState.isNotificationsLoading;
+        },
         refreshNotifications: mocks.refreshNotifications
     })
 }));
@@ -78,7 +94,11 @@ vi.mock('../user', () => ({
     })
 }));
 vi.mock('../location', () => ({
-    useLocationStore: () => ({ lastLocation: null })
+    useLocationStore: () => ({
+        get lastLocation() {
+            return mocks.lastLocation;
+        }
+    })
 }));
 vi.mock('../gameLog', () => ({ useGameLogStore: () => ({ state: {} }) }));
 
@@ -116,6 +136,9 @@ beforeEach(() => {
     mocks.notifications.length = 0;
     mocks.friendLogCurrent.clear();
     mocks.watchState.isLoggedIn = true;
+    mocks.notificationState.isNotificationsLoading = false;
+    mocks.groupInvite.rateLimitCooldownUntil = 0;
+    mocks.lastLocation = null;
     vi.clearAllMocks();
     mocks.api.getFriendStatus.mockImplementation(() =>
         status({
@@ -201,9 +224,15 @@ describe('AIRI actions', () => {
             result: 'sent',
             status: 200
         });
-        expect(
-            JSON.parse(mocks.config.get('PAW_airiIntegration_actionHistory'))
-        ).toHaveLength(1);
+        // Saved shortly after (debounced).
+        await vi.waitFor(() => {
+            expect(
+                JSON.parse(
+                    mocks.config.get('PAW_airiIntegration_actionHistory') ??
+                        '[]'
+                )
+            ).toHaveLength(1);
+        }, { timeout: 3000 });
 
         const second = await call(store, 'friend-request');
         expect(second.status).toBe(429);
@@ -317,9 +346,12 @@ describe('AIRI actions', () => {
                     {
                         userId: USER_A,
                         displayName: 'Alice',
-                        createdAt: '2026-01-01T10:00:00.000Z'
+                        createdAt: '2026-01-01T10:00:00.000Z',
+                        inLobby: false
                     }
-                ]
+                ],
+                pendingTotal: 1,
+                stale: false
             }
         });
         expect(mocks.api.getFriendStatus).not.toHaveBeenCalled();
@@ -347,21 +379,89 @@ describe('AIRI actions', () => {
         expect(res.body.reason).toBe('hourly_limit');
     });
 
-    test('friend-requests refreshes notifications at most once a minute', async () => {
+    test('friend-requests answers from the table without waiting for a refresh', async () => {
         const store = await makeStore();
-        mocks.refreshNotifications.mockImplementation(async () => {
-            mocks.notifications.push({
-                id: 'frq_1',
-                type: 'friendRequest',
-                senderUserId: USER_A,
-                senderUsername: 'Alice',
-                created_at: '2026-01-01T10:00:00.000Z'
-            });
+        mocks.notifications.push({
+            id: 'frq_1',
+            type: 'friendRequest',
+            senderUserId: USER_A,
+            senderUsername: 'Alice',
+            created_at: '2026-01-01T10:00:00.000Z'
         });
+        // A refresh that never finishes must not delay the answer.
+        mocks.refreshNotifications.mockImplementation(
+            () => new Promise(() => {})
+        );
         const first = await call(store, 'friend-requests', '');
         expect(first.body.requests.map((r) => r.userId)).toEqual([USER_A]);
         await call(store, 'friend-requests', '');
         expect(mocks.refreshNotifications).toHaveBeenCalledTimes(1);
+    });
+
+    test('friend-requests refreshes in the background only when older than 10 minutes', async () => {
+        vi.useFakeTimers();
+        try {
+            const store = await makeStore();
+            mocks.refreshNotifications.mockResolvedValue(undefined);
+            await call(store, 'friend-requests', '');
+            await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+            await call(store, 'friend-requests', '');
+            expect(mocks.refreshNotifications).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+            await call(store, 'friend-requests', '');
+            expect(mocks.refreshNotifications).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    test('friend-requests answers from the last complete list while VRCX refreshes', async () => {
+        const store = await makeStore();
+        mocks.notifications.push({
+            id: 'frq_1',
+            type: 'friendRequest',
+            senderUserId: USER_A,
+            senderUsername: 'Alice',
+            created_at: '2026-01-01T10:00:00.000Z'
+        });
+        expect(
+            (await call(store, 'friend-requests', '')).body.pendingTotal
+        ).toBe(1);
+        // VRCX's refresh removes friend requests until it refetched them.
+        mocks.notifications.length = 0;
+        mocks.notificationState.isNotificationsLoading = true;
+        const during = await call(store, 'friend-requests', '');
+        expect(during.body).toMatchObject({ pendingTotal: 1, stale: true });
+        expect(during.body.requests[0].userId).toBe(USER_A);
+    });
+
+    test('friend-requests: lobby first, then oldest, with pendingTotal beyond 50', async () => {
+        const store = await makeStore();
+        const ids = Array.from(
+            { length: 60 },
+            (_, i) => `usr_00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+        );
+        ids.forEach((id, i) =>
+            mocks.notifications.push({
+                id: `frq_${i}`,
+                type: 'friendRequest',
+                senderUserId: id,
+                senderUsername: `n${i}`,
+                created_at: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString()
+            })
+        );
+        mocks.lastLocation = {
+            playerList: new Map([[ids[42], { userId: ids[42] }]])
+        };
+        const res = await call(store, 'friend-requests', '');
+        expect(res.body.pendingTotal).toBe(60);
+        expect(res.body.requests).toHaveLength(50);
+        expect(res.body.requests[0]).toMatchObject({
+            userId: ids[42],
+            inLobby: true
+        });
+        expect(res.body.requests[1].userId).toBe(ids[0]);
+        expect(res.body.requests[2].userId).toBe(ids[1]);
     });
 
     test('friend-accept reports VRChat errors and does not claim success', async () => {
@@ -439,3 +539,138 @@ describe('AIRI actions', () => {
         }
     });
 });
+
+describe('AIRI actions: budgets and VRChat rate limits', () => {
+    function vrchat429() {
+        const err = new Error('429 Too Many Requests');
+        err.status = 429;
+        return err;
+    }
+
+    test('a VRChat 429 becomes vrchat_rate_limited and pauses everything that calls VRChat', async () => {
+        const store = await makeStore();
+        mocks.api.sendFriendRequest.mockRejectedValue(vrchat429());
+        const res = await call(store, 'friend-request');
+        expect(res.status).toBe(429);
+        expect(res.body).toEqual({
+            ok: false,
+            error: 'vrchat_rate_limited',
+            retryAfterSec: 60
+        });
+        // PAW's auto-inviter backs off too.
+        expect(mocks.groupInvite.rateLimitCooldownUntil).toBeGreaterThan(
+            Date.now() + 55 * 1000
+        );
+        // Further actions are refused without calling VRChat.
+        const again = await call(store, 'friend-status');
+        expect(again.status).toBe(429);
+        expect(again.body.error).toBe('vrchat_rate_limited');
+        expect(mocks.api.getFriendStatus).toHaveBeenCalledTimes(1);
+        const status = JSON.parse(store.getStatusJson());
+        expect(status.lookups).toMatchObject({
+            paused: true,
+            pauseReason: 'rate_limited',
+            strikes: 1
+        });
+        expect(status.lookups.lastRateLimitAt).toBeGreaterThan(0);
+    });
+
+    test('friend-accept with a loaded notification is one VRChat call (no friend-status)', async () => {
+        const store = await makeStore();
+        mocks.friendRequestKey = 'not_1';
+        mocks.api.acceptFriendRequestNotification.mockResolvedValue({
+            json: {},
+            params: { notificationId: 'not_1' }
+        });
+        expect((await call(store, 'friend-accept')).body.result).toBe(
+            'accepted'
+        );
+        expect(mocks.api.getFriendStatus).not.toHaveBeenCalled();
+        expect(mocks.api.acceptFriendRequestNotification).toHaveBeenCalledTimes(
+            1
+        );
+    });
+
+    test('the accepts-per-hour setting is applied and saved', async () => {
+        mocks.config.set(
+            'PAW_airiIntegration_actionHistory',
+            JSON.stringify(
+                Array.from({ length: 30 }, (_, i) => ({
+                    kind: 'friend-accept',
+                    userId: `usr_00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+                    at: Date.now() - 1000
+                }))
+            )
+        );
+        mocks.config.set('PAW_airiIntegration_acceptPerHour', '30');
+        const store = await makeStore();
+        expect(store.acceptPerHour).toBe(30);
+        mocks.friendRequestKey = 'not_1';
+        mocks.api.acceptFriendRequestNotification.mockResolvedValue({
+            json: {},
+            params: { notificationId: 'not_1' }
+        });
+        const limited = await call(store, 'friend-accept');
+        expect(limited.status).toBe(429);
+        expect(limited.body.reason).toBe('hourly_limit');
+
+        store.setAcceptPerHour(90);
+        expect(mocks.config.get('PAW_airiIntegration_acceptPerHour')).toBe(
+            '90'
+        );
+        expect((await call(store, 'friend-accept')).body.result).toBe(
+            'accepted'
+        );
+        const budget = JSON.parse(store.getStatusJson()).friendBudget;
+        expect(budget['friend-accept']).toMatchObject({
+            usedHour: 31,
+            perHour: 90,
+            remainingHour: 59
+        });
+    });
+
+    test('status checks and request lists are not written to the config', async () => {
+        const store = await makeStore();
+        await call(store, 'friend-status');
+        await call(store, 'friend-requests', '');
+        await call(store, 'friend-request');
+        await vi.waitFor(
+            () => {
+                const saved = JSON.parse(
+                    mocks.config.get('PAW_airiIntegration_actionHistory') ??
+                        '[]'
+                );
+                expect(saved.map((e) => e.kind)).toEqual(['friend-request']);
+            },
+            { timeout: 3000 }
+        );
+        // ...but still count in memory.
+        const budget = JSON.parse(store.getStatusJson()).friendBudget;
+        expect(budget['friend-status'].usedHour).toBe(1);
+        expect(budget['friend-requests'].usedHour).toBe(1);
+    });
+
+    test('/paw/status exposes lookup and friend budgets', async () => {
+        const store = await makeStore();
+        const status = JSON.parse(store.getStatusJson());
+        expect(status).toMatchObject({
+            enabled: true,
+            actionsEnabled: true,
+            acceptPerHour: 60,
+            lookups: {
+                queued: 0,
+                hourlyCeiling: 600,
+                burst: 10,
+                intervalMs: 2500,
+                paused: false
+            }
+        });
+        expect(Object.keys(status.friendBudget).sort()).toEqual([
+            'friend-accept',
+            'friend-request',
+            'friend-requests',
+            'friend-status'
+        ]);
+    });
+});
+

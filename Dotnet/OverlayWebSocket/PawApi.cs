@@ -20,44 +20,68 @@ namespace VRCX;
 ///   200 application/json  - payload from window.$pinia.airiIntegration.getPlayersJson()
 ///   403 {"enabled":false} - integration is disabled in the app (default)
 /// GET /paw/status
-///   200 {"enabled":bool,"actionsEnabled":bool,"version":"...","playerCount":n}
+///   200 {"enabled":bool,"actionsEnabled":bool,"version":"...","playerCount":n,
+///        "acceptPerHour":n,"lookups":{...},"friendBudget":{...}}
+///       lookups: paced group/bio lookup queue (queued, callsThisHour, hourlyCeiling,
+///       paused, pauseReason, retryAfterSec, strikes, lastRateLimitAt, cacheSize, ...);
+///       friendBudget: per action kind {usedHour, perHour, remainingHour, usedDay, perDay, remainingDay}
 ///
-/// Actions (only when "Allow AIRI actions" is also on). Header X-Paw-Token is required
-/// (the token is in %APPDATA%\VRCX\paw-airi-token.txt; 401 otherwise):
+/// Header X-Paw-Token is required for everything below (the token is in
+/// %APPDATA%\VRCX\paw-airi-token.txt; 401 otherwise):
+/// GET  /paw/player?userId=usr_...  (needs the integration on, not actions)
+///   200 {"ok":true,"player":{...same fields as /paw/players...},"inInstance":b,"pending":b,
+///        "retryAfterSec"?:n} - looks up the player's missing bio/VRC+/group first in line
+///       (waits up to 15 s), then answers with what is known
+///   403 {"enabled":false,...}, 400 invalid_user_id / self_not_allowed, 503 not_logged_in
+///
+/// Actions (only when "Allow AIRI actions" is also on):
 /// POST /paw/friend-request {"userId":"usr_..."}
 /// POST /paw/friend-accept  {"userId":"usr_..."}
 /// GET  /paw/friend-status?userId=usr_...
 /// GET  /paw/friend-requests
-///   200 {"ok":true,"requests":[{"userId","displayName","createdAt"}]} - incoming pending
-///       friend requests VRCX already knows (notification table), newest first, max 50
+///   200 {"ok":true,"requests":[{"userId","displayName","createdAt","inLobby"}],"pendingTotal":n,
+///        "stale":b} - incoming pending friend requests from VRCX's notification table,
+///       answered right away; senders in the instance first, then oldest first, max 50
 ///   200 {"ok":bool,"result":"...","userId":"...","displayName":"..."}
 ///       (friend-status: {"ok":true,"isFriend":b,"outgoingPending":b,"incomingPending":b,...})
 ///   400 invalid_user_id / self_not_allowed, 403 {"enabled":b,"actionsEnabled":false,...},
-///   429 rate_limited, 502 vrchat_error
+///   429 {"error":"rate_limited","reason":"...","retryAfterSec":n} (VRCX's own limits),
+///   429 {"error":"vrchat_rate_limited","retryAfterSec":n} (VRChat answered 429; everything
+///       that calls VRChat backs off together), 502 vrchat_error,
+///   504 {"error":"timeout","result":"unknown"} - no answer within 25 s; the action may
+///       still complete, so check friend-status before reporting a failure
 ///
 /// Common errors:
 ///   403 - request carries an Origin header (blocks cross-site reads from web pages)
 ///         or does not come from the loopback interface
 ///   405 - wrong method (POST only for friend-request/friend-accept, GET otherwise)
 ///   503 - main browser/page not ready
+///
+/// Timeouts: every action or player request is answered within 25 s, so clients
+/// should wait longer than that (the AIRI client uses 35 s).
 /// </summary>
 public static class PawApi
 {
     private static readonly Logger logger = LogManager.GetCurrentClassLogger();
 
     private const string PlayersPath = "/paw/players";
+    private const string PlayerPath = "/paw/player";
     private const string StatusPath = "/paw/status";
     private const string TokenFileName = "paw-airi-token.txt";
     private const string TokenHeader = "X-Paw-Token";
     private const int MaxBodyBytes = 4096;
-    private static readonly TimeSpan ActionTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>Total time an action or player request may take, queueing included.</summary>
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(25);
     private static readonly SemaphoreSlim ActionConcurrency = new(1, 1);
+    private static readonly SemaphoreSlim PlayerConcurrency = new(4, 4);
     private static readonly Regex UserIdRegex = new(
         "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         RegexOptions.CultureInvariant);
     private static byte[] _token;
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromSeconds(2);
     private static readonly SemaphoreSlim Concurrency = new(4, 4);
+
+    private const string TimeoutBody = "{\"ok\":false,\"error\":\"timeout\",\"result\":\"unknown\"}";
 
     private const string PlayersScript =
         "(function(){var s=window.$pinia&&window.$pinia.airiIntegration;" +
@@ -110,6 +134,10 @@ public static class PawApi
             if (actionKind != null)
             {
                 await HandleAction(request, response, actionKind);
+            }
+            else if (string.Equals(path, PlayerPath, StringComparison.OrdinalIgnoreCase))
+            {
+                await HandlePlayer(request, response);
             }
             else if (string.Equals(path, PlayersPath, StringComparison.OrdinalIgnoreCase))
             {
@@ -227,6 +255,56 @@ public static class PawApi
         return null;
     }
 
+    private static CefSharp.WinForms.ChromiumWebBrowser GetReadyBrowser()
+    {
+        var browser = MainForm.Instance?.Browser;
+        return browser != null && browser.IsBrowserInitialized && !browser.IsLoading &&
+               browser.CanExecuteJavascriptInMainFrame
+            ? browser
+            : null;
+    }
+
+    /// <summary>
+    /// Waits for a slot of <paramref name="gate"/> and runs a store method that returns a
+    /// JSON {status, body} string, all within <see cref="RequestTimeout"/>.
+    /// </summary>
+    /// <returns>(timedOut, resultJson); resultJson is null when the page is not ready.</returns>
+    private static async Task<(bool timedOut, string resultJson)> RunStoreRequest(
+        CefSharp.WinForms.ChromiumWebBrowser browser, SemaphoreSlim gate, string script)
+    {
+        var started = DateTime.UtcNow;
+        if (!await gate.WaitAsync(RequestTimeout))
+            return (true, null);
+
+        try
+        {
+            var remaining = RequestTimeout - (DateTime.UtcNow - started);
+            if (remaining < TimeSpan.FromSeconds(1))
+                return (true, null);
+
+            var scriptResponse = await browser.EvaluateScriptAsPromiseAsync(script, remaining);
+            if (scriptResponse.Success)
+                return (false, scriptResponse.Result as string);
+            if (scriptResponse.Message?.Contains("timeout", StringComparison.OrdinalIgnoreCase) == true)
+                return (true, null);
+            logger.Warn("PAW API store script failed: {0}", scriptResponse.Message);
+            return (false, null);
+        }
+        catch (Exception e) when (e is OperationCanceledException or TimeoutException)
+        {
+            return (true, null);
+        }
+        catch (Exception e)
+        {
+            logger.Warn(e, "PAW API store script failed");
+            return (false, null);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     private static async Task HandleAction(HttpListenerRequest request, HttpListenerResponse response, string kind)
     {
         if (!IsTokenValid(request.Headers[TokenHeader]))
@@ -244,39 +322,26 @@ public static class PawApi
             return;
         }
 
-        var browser = MainForm.Instance?.Browser;
-        if (browser == null || !browser.IsBrowserInitialized || browser.IsLoading ||
-            !browser.CanExecuteJavascriptInMainFrame)
+        var browser = GetReadyBrowser();
+        if (browser == null)
         {
             await WriteJson(response, 503, "{\"error\":\"not_ready\"}");
             return;
         }
 
-        if (!await ActionConcurrency.WaitAsync(ActionTimeout))
-        {
-            await WriteJson(response, 503, "{\"error\":\"busy\"}");
-            return;
-        }
+        // userId is regex-validated and JSON-encoded, so it cannot break out of the string literal.
+        var script =
+            "var s=window.$pinia&&window.$pinia.airiIntegration;" +
+            "if(!s||typeof s.handleActionRequest!=='function')return false;" +
+            $"return s.handleActionRequest({JsonSerializer.Serialize(kind)},{JsonSerializer.Serialize(userId)});";
+        var (timedOut, resultJson) = await RunStoreRequest(browser, ActionConcurrency, script);
 
-        string resultJson;
-        try
+        if (timedOut)
         {
-            // userId is regex-validated and JSON-encoded, so it cannot break out of the string literal.
-            var script =
-                "var s=window.$pinia&&window.$pinia.airiIntegration;" +
-                "if(!s||typeof s.handleActionRequest!=='function')return false;" +
-                $"return s.handleActionRequest({JsonSerializer.Serialize(kind)},{JsonSerializer.Serialize(userId)});";
-            var scriptResponse = await browser.EvaluateScriptAsPromiseAsync(script, ActionTimeout);
-            resultJson = scriptResponse.Success ? scriptResponse.Result as string : null;
-        }
-        catch (Exception e)
-        {
-            logger.Warn(e, "PAW API action script failed");
-            resultJson = null;
-        }
-        finally
-        {
-            ActionConcurrency.Release();
+            // The store may still finish the action: the caller must re-check, not assume failure.
+            logger.Warn("PAW API action {0} userId={1} -> 504 timeout (result unknown)", kind, userId);
+            await WriteJson(response, 504, TimeoutBody);
+            return;
         }
 
         if (resultJson == null)
@@ -317,6 +382,60 @@ public static class PawApi
         await WriteJson(response, status, body);
     }
 
+    private static async Task HandlePlayer(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        if (!IsTokenValid(request.Headers[TokenHeader]))
+        {
+            logger.Warn("PAW API: player rejected, missing or wrong {0}", TokenHeader);
+            await WriteJson(response, 401, "{\"error\":\"unauthorized\"}");
+            return;
+        }
+
+        var userId = request.QueryString["userId"];
+        if (userId == null || !UserIdRegex.IsMatch(userId))
+        {
+            await WriteJson(response, 400, "{\"ok\":false,\"error\":\"invalid_user_id\"}");
+            return;
+        }
+
+        var browser = GetReadyBrowser();
+        if (browser == null)
+        {
+            await WriteJson(response, 503, "{\"error\":\"not_ready\"}");
+            return;
+        }
+
+        // userId is regex-validated and JSON-encoded, so it cannot break out of the string literal.
+        var script =
+            "var s=window.$pinia&&window.$pinia.airiIntegration;" +
+            "if(!s||typeof s.handlePlayerRequest!=='function')return false;" +
+            $"return s.handlePlayerRequest({JsonSerializer.Serialize(userId)});";
+        var (timedOut, resultJson) = await RunStoreRequest(browser, PlayerConcurrency, script);
+
+        if (timedOut)
+        {
+            await WriteJson(response, 504, TimeoutBody);
+            return;
+        }
+
+        if (resultJson == null)
+        {
+            await WriteJson(response, 503, "{\"error\":\"not_ready\"}");
+            return;
+        }
+
+        int status;
+        string body;
+        using (var document = JsonDocument.Parse(resultJson))
+        {
+            var root = document.RootElement;
+            status = root.GetProperty("status").GetInt32();
+            body = root.GetProperty("body").GetRawText();
+        }
+
+        await WriteJson(response, status, body);
+    }
+
     private static async Task HandlePlayers(HttpListenerResponse response)
     {
         var (ready, result) = await Evaluate(PlayersScript);
@@ -347,6 +466,9 @@ public static class PawApi
         var enabled = false;
         var actionsEnabled = false;
         var playerCount = 0;
+        int? acceptPerHour = null;
+        JsonElement? lookups = null;
+        JsonElement? friendBudget = null;
         using (var document = JsonDocument.Parse(json))
         {
             var root = document.RootElement;
@@ -359,6 +481,17 @@ public static class PawApi
             if (root.TryGetProperty("playerCount", out var countElement) &&
                 countElement.ValueKind == JsonValueKind.Number)
                 playerCount = countElement.GetInt32();
+            if (root.TryGetProperty("acceptPerHour", out var acceptElement) &&
+                acceptElement.ValueKind == JsonValueKind.Number &&
+                acceptElement.TryGetInt32(out var acceptValue))
+                acceptPerHour = acceptValue;
+            // Clone: the document is disposed before serialization.
+            if (root.TryGetProperty("lookups", out var lookupsElement) &&
+                lookupsElement.ValueKind == JsonValueKind.Object)
+                lookups = lookupsElement.Clone();
+            if (root.TryGetProperty("friendBudget", out var budgetElement) &&
+                budgetElement.ValueKind == JsonValueKind.Object)
+                friendBudget = budgetElement.Clone();
         }
 
         var status = JsonSerializer.Serialize(new
@@ -366,7 +499,10 @@ public static class PawApi
             enabled,
             actionsEnabled,
             version = Program.Version,
-            playerCount
+            playerCount,
+            acceptPerHour,
+            lookups,
+            friendBudget
         });
         await WriteJson(response, 200, status);
     }
@@ -377,9 +513,8 @@ public static class PawApi
     /// </summary>
     private static async Task<(bool ready, object result)> Evaluate(string script)
     {
-        var browser = MainForm.Instance?.Browser;
-        if (browser == null || !browser.IsBrowserInitialized || browser.IsLoading ||
-            !browser.CanExecuteJavascriptInMainFrame)
+        var browser = GetReadyBrowser();
+        if (browser == null)
             return (false, null);
 
         if (!await Concurrency.WaitAsync(ScriptTimeout))

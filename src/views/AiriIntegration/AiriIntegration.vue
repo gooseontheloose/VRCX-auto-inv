@@ -45,7 +45,7 @@
                     <div class="min-w-0">
                         <div class="text-sm font-medium">{{ t('view.airi_integration.fetch_groups') }}</div>
                         <div class="text-xs text-muted-foreground">
-                            {{ t('view.airi_integration.fetch_groups_description') }}
+                            {{ t('view.airi_integration.fetch_groups_description', lookupPace) }}
                         </div>
                     </div>
                     <Switch :model-value="airiStore.fetchGroups" @update:modelValue="airiStore.setFetchGroups" />
@@ -54,7 +54,7 @@
                     <div class="min-w-0">
                         <div class="text-sm font-medium">{{ t('view.airi_integration.actions_enable') }}</div>
                         <div class="text-xs text-muted-foreground">
-                            {{ t('view.airi_integration.actions_enable_description') }}
+                            {{ t('view.airi_integration.actions_enable_description', requestLimits) }}
                         </div>
                         <div class="text-xs text-muted-foreground mt-1">
                             {{ t('view.airi_integration.actions_token_note') }}
@@ -65,6 +65,29 @@
                         </div>
                     </div>
                     <Switch :model-value="airiStore.actionsEnabled" @update:modelValue="airiStore.setActionsEnabled" />
+                </div>
+                <div class="flex items-center justify-between gap-4">
+                    <div class="min-w-0">
+                        <div class="text-sm font-medium">{{ t('view.airi_integration.accept_per_hour') }}</div>
+                        <div class="text-xs text-muted-foreground">
+                            {{ t('view.airi_integration.accept_per_hour_description') }}
+                        </div>
+                    </div>
+                    <Select :model-value="String(airiStore.acceptPerHour)" @update:modelValue="setAcceptPerHour">
+                        <SelectTrigger size="sm" class="w-24 shrink-0">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectGroup>
+                                <SelectItem
+                                    v-for="option in AIRI_ACCEPT_PER_HOUR_OPTIONS"
+                                    :key="option"
+                                    :value="String(option)">
+                                    {{ option }}
+                                </SelectItem>
+                            </SelectGroup>
+                        </SelectContent>
+                    </Select>
                 </div>
             </div>
 
@@ -105,9 +128,76 @@
                 <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm">
                     <dt class="text-muted-foreground">{{ t('view.airi_integration.stats_last_request') }}</dt>
                     <dd>{{ lastRequestText }}</dd>
-                    <dt class="text-muted-foreground">{{ t('view.airi_integration.stats_groups_fetched') }}</dt>
-                    <dd>{{ airiStore.groupFetchCount }} / 100</dd>
                 </dl>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <!-- Lookup budget -->
+            <div class="border rounded-lg p-4 space-y-3">
+                <h3 class="font-semibold flex items-center gap-2">
+                    <Gauge class="size-4 text-primary" /> {{ t('view.airi_integration.lookups_header') }}
+                </h3>
+                <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm">
+                    <dt class="text-muted-foreground">{{ t('view.airi_integration.lookups_this_hour') }}</dt>
+                    <dd>{{ lookupStatus.callsThisHour }} / {{ lookupStatus.hourlyCeiling }}</dd>
+                    <dt class="text-muted-foreground">{{ t('view.airi_integration.lookups_state') }}</dt>
+                    <dd :class="{ 'text-amber-500': lookupStatus.paused }">{{ lookupStateText }}</dd>
+                    <dt class="text-muted-foreground">{{ t('view.airi_integration.lookups_queue') }}</dt>
+                    <dd>
+                        {{
+                            t('view.airi_integration.lookups_queue_detail', {
+                                total: lookupStatus.queued,
+                                explicit: lookupStatus.byPriority.explicit,
+                                present: lookupStatus.byPriority.present,
+                                backlog: lookupStatus.byPriority.backlog
+                            })
+                        }}
+                    </dd>
+                    <dt class="text-muted-foreground">{{ t('view.airi_integration.lookups_results') }}</dt>
+                    <dd>
+                        {{
+                            t('view.airi_integration.lookups_results_detail', {
+                                ok: lookupStatus.ok,
+                                failed: lookupStatus.failed,
+                                skipped: skippedTotal
+                            })
+                        }}
+                    </dd>
+                    <dt class="text-muted-foreground">{{ t('view.airi_integration.lookups_cached') }}</dt>
+                    <dd>{{ lookupStatus.cacheSize.toLocaleString() }}</dd>
+                    <dt class="text-muted-foreground">{{ t('view.airi_integration.lookups_last_rate_limit') }}</dt>
+                    <dd>
+                        {{
+                            lookupStatus.lastRateLimitAt
+                                ? new Date(lookupStatus.lastRateLimitAt).toLocaleString()
+                                : t('view.airi_integration.stats_never')
+                        }}
+                    </dd>
+                </dl>
+            </div>
+
+            <!-- Friend action budget -->
+            <div class="border rounded-lg p-4 space-y-3">
+                <h3 class="font-semibold flex items-center gap-2">
+                    <UserPlus class="size-4 text-primary" /> {{ t('view.airi_integration.friend_budget_header') }}
+                </h3>
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>{{ t('view.airi_integration.friend_budget_kind') }}</TableHead>
+                            <TableHead>{{ t('view.airi_integration.friend_budget_hour') }}</TableHead>
+                            <TableHead>{{ t('view.airi_integration.friend_budget_day') }}</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        <TableRow v-for="row in friendBudgetRows" :key="row.kind">
+                            <TableCell class="text-sm">{{ row.label }}</TableCell>
+                            <TableCell class="text-sm">{{ row.hour }}</TableCell>
+                            <TableCell class="text-sm">{{ row.day }}</TableCell>
+                        </TableRow>
+                    </TableBody>
+                </Table>
             </div>
         </div>
 
@@ -250,13 +340,28 @@
 <script setup>
     import { computed, onBeforeUnmount, ref } from 'vue';
     import { useI18n } from 'vue-i18n';
-    import { Activity, Bot, Braces, Check, Copy, Eye, Plug, Settings2, ShieldCheck, UserPlus } from 'lucide-vue-next';
+    import {
+        Activity,
+        Bot,
+        Braces,
+        Check,
+        Copy,
+        Eye,
+        Gauge,
+        Plug,
+        Settings2,
+        ShieldCheck,
+        UserPlus
+    } from 'lucide-vue-next';
 
     import { Badge } from '@/components/ui/badge';
     import { Button } from '@/components/ui/button';
+    import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
     import { Switch } from '@/components/ui/switch';
     import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
     import { useAiriIntegrationStore } from '@/stores/airiIntegration';
+    import { AIRI_ACCEPT_PER_HOUR_OPTIONS, AIRI_ACTION_LIMITS } from '@/shared/utils/airiIntegration';
+    import { AIRI_LOOKUP_BURST, AIRI_LOOKUP_HOURLY_CEILING, AIRI_LOOKUP_INTERVAL_MS } from '@/shared/utils/airiLookupQueue';
 
     const ENDPOINT_URL = 'http://127.0.0.1:34582/paw/players';
     const TOKEN_PATH = '%APPDATA%\\VRCX\\paw-airi-token.txt';
@@ -287,6 +392,62 @@
     });
 
     const payloadJson = computed(() => JSON.stringify(payload.value, null, 2));
+
+    const lookupPace = {
+        seconds: AIRI_LOOKUP_INTERVAL_MS / 1000,
+        burst: AIRI_LOOKUP_BURST,
+        ceiling: AIRI_LOOKUP_HOURLY_CEILING
+    };
+    const requestLimits = {
+        requestsPerHour: AIRI_ACTION_LIMITS['friend-request'].perHour,
+        requestsPerDay: AIRI_ACTION_LIMITS['friend-request'].perDay
+    };
+
+    const lookupStatus = computed(() => {
+        void tick.value;
+        void airiStore.lookupVersion;
+        return airiStore.getLookupStatus();
+    });
+
+    const skippedTotal = computed(() =>
+        Object.values(lookupStatus.value.skipped).reduce((sum, count) => sum + count, 0)
+    );
+
+    const lookupStateText = computed(() => {
+        const status = lookupStatus.value;
+        if (status.paused) {
+            return t(`view.airi_integration.lookups_paused_${status.pauseReason}`, {
+                seconds: status.retryAfterSec
+            });
+        }
+        return status.running ? t('view.airi_integration.lookups_running') : t('view.airi_integration.lookups_idle');
+    });
+
+    const FRIEND_BUDGET_KINDS = [
+        ['friend-accept', 'friend_budget_accepts'],
+        ['friend-request', 'friend_budget_requests'],
+        ['friend-status', 'friend_budget_status'],
+        ['friend-requests', 'friend_budget_lists']
+    ];
+
+    const friendBudgetRows = computed(() => {
+        void tick.value;
+        void airiStore.acceptPerHour;
+        const budget = airiStore.getFriendBudget();
+        return FRIEND_BUDGET_KINDS.map(([kind, labelKey]) => {
+            const entry = budget[kind];
+            return {
+                kind,
+                label: t(`view.airi_integration.${labelKey}`),
+                hour: entry.perHour ? `${entry.usedHour} / ${entry.perHour}` : String(entry.usedHour),
+                day: entry.perDay ? `${entry.usedDay} / ${entry.perDay}` : String(entry.usedDay)
+            };
+        });
+    });
+
+    function setAcceptPerHour(value) {
+        airiStore.setAcceptPerHour(Number(value));
+    }
 
     const lastRequestText = computed(() => {
         void tick.value;

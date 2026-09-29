@@ -1,10 +1,17 @@
 import {
+    AIRI_ACCEPT_PER_HOUR_DEFAULT,
+    AIRI_ACCEPT_PER_HOUR_OPTIONS,
     AIRI_ACTION_LIMITS,
     buildIncomingFriendRequests,
     buildPlayersPayload,
     checkActionRateLimit,
+    computeActionBudget,
+    createLruMap,
+    isCacheFresh,
     isValidAiriUserId,
+    normalizeAcceptPerHour,
     pruneActionHistory,
+    resolveActionLimits,
     sanitizeBio
 } from '../airiIntegration';
 
@@ -146,6 +153,7 @@ describe('buildPlayersPayload', () => {
             isFriend: true,
             trustLevel: 'Trusted User',
             isVRCPlus: true,
+            vrcPlusKnown: true,
             platform: 'standalonewindows',
             avatarName: 'Cat Girl',
             status: 'active',
@@ -227,6 +235,7 @@ describe('buildPlayersPayload', () => {
             isFriend: false,
             trustLevel: '',
             isVRCPlus: false,
+            vrcPlusKnown: false,
             platform: '',
             avatarName: '',
             status: '',
@@ -394,17 +403,50 @@ describe('checkActionRateLimit', () => {
         });
     });
 
-    test('accepts: max 30 per hour, no per-user cooldown', () => {
-        const users = uniqueUsers(29);
+    test('accepts: max 60 per hour by default, no per-user cooldown', () => {
+        const users = uniqueUsers(59);
         const accepts = sentTo(users, NOW - 1000, 'friend-accept');
         expect(
             checkActionRateLimit(accepts, 'friend-accept', users[0], NOW)
                 .allowed
         ).toBe(true);
-        const full = sentTo(uniqueUsers(30), NOW - 1000, 'friend-accept');
+        const full = sentTo(uniqueUsers(60), NOW - 1000, 'friend-accept');
         expect(
             checkActionRateLimit(full, 'friend-accept', USER_A, NOW).reason
         ).toBe('hourly_limit');
+    });
+
+    test('the accepts-per-hour setting changes the accept limit only', () => {
+        const limits = resolveActionLimits({ acceptPerHour: 120 });
+        expect(limits['friend-accept'].perHour).toBe(120);
+        expect(limits['friend-request']).toBe(
+            AIRI_ACTION_LIMITS['friend-request']
+        );
+        const accepts = sentTo(uniqueUsers(100), NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(accepts, 'friend-accept', USER_A, NOW, limits)
+                .allowed
+        ).toBe(true);
+        expect(
+            checkActionRateLimit(
+                accepts,
+                'friend-accept',
+                USER_A,
+                NOW,
+                resolveActionLimits({ acceptPerHour: 30 })
+            ).reason
+        ).toBe('hourly_limit');
+    });
+
+    test('invalid accepts-per-hour values fall back to the default', () => {
+        expect(normalizeAcceptPerHour('90')).toBe(90);
+        expect(normalizeAcceptPerHour(5000)).toBe(AIRI_ACCEPT_PER_HOUR_DEFAULT);
+        expect(normalizeAcceptPerHour(undefined)).toBe(
+            AIRI_ACCEPT_PER_HOUR_DEFAULT
+        );
+        expect(AIRI_ACCEPT_PER_HOUR_OPTIONS).toContain(
+            AIRI_ACCEPT_PER_HOUR_DEFAULT
+        );
     });
 
     test('kinds are counted separately', () => {
@@ -515,5 +557,174 @@ describe('buildIncomingFriendRequests', () => {
         expect(
             checkActionRateLimit(history, 'friend-status', USER_A, NOW).allowed
         ).toBe(true);
+    });
+});
+
+describe('AIRI lookup cache in the payload', () => {
+    test('uses the lookup cache for bio, VRC+ and group of uncached players', () => {
+        const input = makeInput({
+            playerList: new Map([
+                ['usr_b', { userId: 'usr_b', displayName: 'Bob', joinTime: 5 }]
+            ]),
+            cachedUsers: new Map(),
+            groupsByUserId: new Map([
+                ['usr_b', { name: 'Bob Club', shortCode: 'BOB' }]
+            ]),
+            profileCache: new Map([
+                [
+                    'usr_b',
+                    {
+                        bio: 'hi discord: bob.b',
+                        isVRCPlus: true,
+                        groupName: 'x'
+                    }
+                ]
+            ])
+        });
+        const [player] = buildPlayersPayload(input).players;
+        expect(player).toMatchObject({
+            bio: 'hi',
+            isVRCPlus: true,
+            vrcPlusKnown: true,
+            representedGroup: { name: 'Bob Club', shortCode: 'BOB' }
+        });
+    });
+
+    test('a cached profile with tags wins over the lookup cache', () => {
+        const input = makeInput({
+            cachedUsers: new Map([
+                [
+                    'usr_a',
+                    makeProfile({ tags: [], $isVRCPlus: false, bio: '' })
+                ]
+            ]),
+            profileCache: new Map([
+                ['usr_a', { bio: 'from cache', isVRCPlus: true }]
+            ])
+        });
+        const [player] = buildPlayersPayload(input).players;
+        expect(player.isVRCPlus).toBe(false);
+        expect(player.vrcPlusKnown).toBe(true);
+        // Core had no bio text: the cached one fills in.
+        expect(player.bio).toBe('from cache');
+    });
+
+    test('a profile icon alone never means VRC+ (icons are free since 2026.3.1)', () => {
+        const input = makeInput({
+            cachedUsers: new Map([
+                [
+                    'usr_a',
+                    makeProfile({
+                        tags: ['system_trust_known'],
+                        $isVRCPlus: false,
+                        userIcon: 'https://example.com/icon.png'
+                    })
+                ]
+            ])
+        });
+        expect(buildPlayersPayload(input).players[0].isVRCPlus).toBe(false);
+    });
+
+    test('a limited profile without tags reports VRC+ as unknown', () => {
+        const input = makeInput({
+            cachedUsers: new Map([
+                ['usr_a', { id: 'usr_a', displayName: 'Alice' }]
+            ])
+        });
+        const [player] = buildPlayersPayload(input).players;
+        expect(player.isVRCPlus).toBe(false);
+        expect(player.vrcPlusKnown).toBe(false);
+    });
+});
+
+describe('friend requests: lobby first, then oldest', () => {
+    const USER_C = 'usr_33333333-3333-4333-8333-333333333333';
+    function fr(senderUserId, createdAt) {
+        return {
+            id: `frq_${senderUserId}`,
+            type: 'friendRequest',
+            senderUserId,
+            senderUsername: senderUserId.slice(4, 8),
+            created_at: createdAt
+        };
+    }
+
+    test('orders senders in the instance first, each group oldest first', () => {
+        const here = new Set([USER_C]);
+        const result = buildIncomingFriendRequests(
+            [
+                fr(USER_A, '2026-01-03T10:00:00.000Z'),
+                fr(USER_B, '2026-01-01T10:00:00.000Z'),
+                fr(USER_C, '2026-01-05T10:00:00.000Z')
+            ],
+            { isPresent: (id) => here.has(id) }
+        );
+        expect(result.map((r) => [r.userId, r.inLobby])).toEqual([
+            [USER_C, true],
+            [USER_B, false],
+            [USER_A, false]
+        ]);
+    });
+
+    test('an unlimited list gives the pending total', () => {
+        const users = uniqueUsers(70);
+        const all = buildIncomingFriendRequests(
+            users.map((id, i) => fr(id, new Date(NOW + i * 1000).toISOString())),
+            { isPresent: () => false, limit: Number.MAX_SAFE_INTEGER }
+        );
+        expect(all).toHaveLength(70);
+        expect(all[0].userId).toBe(users[0]);
+    });
+});
+
+describe('computeActionBudget', () => {
+    test('reports used and remaining per kind with the configured limits', () => {
+        const history = [
+            ...sentTo(uniqueUsers(3), NOW - 1000, 'friend-accept'),
+            ...sentTo(uniqueUsers(2), NOW - 2 * HOUR, 'friend-request'),
+            ...sentTo([USER_A], NOW - 1000, 'friend-request')
+        ];
+        const budget = computeActionBudget(
+            history,
+            NOW,
+            resolveActionLimits({ acceptPerHour: 90 })
+        );
+        expect(budget['friend-accept']).toEqual({
+            usedHour: 3,
+            perHour: 90,
+            remainingHour: 87,
+            usedDay: 3,
+            perDay: null,
+            remainingDay: null
+        });
+        expect(budget['friend-request']).toMatchObject({
+            usedHour: 1,
+            remainingHour: 9,
+            usedDay: 3,
+            remainingDay: 27
+        });
+        expect(budget['friend-status'].remainingHour).toBe(120);
+    });
+});
+
+describe('lookup cache helpers', () => {
+    test('isCacheFresh', () => {
+        expect(isCacheFresh(NOW - 1000, 2000, NOW)).toBe(true);
+        expect(isCacheFresh(NOW - 3000, 2000, NOW)).toBe(false);
+        expect(isCacheFresh(0, 2000, NOW)).toBe(false);
+        expect(isCacheFresh(NOW + 1000, 2000, NOW)).toBe(false);
+        expect(isCacheFresh(undefined, 2000, NOW)).toBe(false);
+    });
+
+    test('createLruMap evicts the least recently used entry', () => {
+        const lru = createLruMap(2);
+        lru.set('a', 1);
+        lru.set('b', 2);
+        expect(lru.get('a')).toBe(1);
+        lru.set('c', 3);
+        expect(lru.has('b')).toBe(false);
+        expect(lru.has('a')).toBe(true);
+        expect(lru.peek('c')).toBe(3);
+        expect(lru.size).toBe(2);
     });
 });
