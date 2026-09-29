@@ -329,4 +329,142 @@ describe('delivery queue', () => {
             ).reason
         ).toBe('stopped');
     });
+
+    test('network errors never dead-letter: a long outage delivers once back online', async () => {
+        const offline = { kind: 'retry', status: 0, error: 'Failed to fetch' };
+        const t = setup({ results: Array.from({ length: 40 }, () => offline) });
+        await t.queue.load('usr_1');
+        await t.queue.enqueue({ webhookId: 'a', eventId: 'e1', payload: {} });
+        // two hours offline, worker woken every minute
+        for (let m = 0; m < 120; m++) {
+            await t.queue.processDue();
+            t.advance(60_000);
+        }
+        expect(t.queue.stats()).toEqual({ pending: 1, dead: 0 });
+        // retries are capped at maxDelayMs, so at most ~10 min apart
+        expect(t.post.mock.calls.length).toBeGreaterThanOrEqual(12);
+        t.post.mockImplementation(async () => ({ kind: 'ok', status: 200 }));
+        t.advance(10 * 60_000);
+        await t.queue.processDue();
+        expect(t.queue.stats()).toEqual({ pending: 0, dead: 0 });
+    });
+
+    test('5xx still dead-letters after maxAttempts', async () => {
+        const boom = { kind: 'retry', status: 502, error: 'HTTP 502' };
+        const t = setup({ results: Array.from({ length: 10 }, () => boom) });
+        await t.queue.load('usr_1');
+        await t.queue.enqueue({ webhookId: 'a', eventId: 'e1', payload: {} });
+        for (let i = 0; i < 10; i++) {
+            await t.queue.processDue();
+            t.advance(20 * 60_000);
+        }
+        expect(t.queue.stats()).toEqual({ pending: 0, dead: 1 });
+        expect(t.post).toHaveBeenCalledTimes(6);
+    });
+
+    test('keeps per-webhook order when an item is backing off', async () => {
+        const t = setup({
+            results: [{ kind: 'retry', status: 502, error: 'HTTP 502' }]
+        });
+        await t.queue.load('usr_1');
+        for (const n of [1, 2, 3])
+            await t.queue.enqueue({
+                webhookId: 'a',
+                eventId: `e${n}`,
+                payload: { n }
+            });
+        await t.queue.enqueue({
+            webhookId: 'b',
+            eventId: 'b1',
+            payload: { n: 'b' }
+        });
+        await t.queue.processDue();
+        // a/e1 failed; a/e2 and a/e3 wait behind it, b is unaffected
+        expect(t.calls.map((c) => c.payload.n)).toEqual([1, 'b']);
+        t.advance(60_000);
+        await t.queue.processDue();
+        expect(t.calls.map((c) => c.payload.n)).toEqual([1, 'b', 1, 2, 3]);
+    });
+
+    test('stale items expire instead of posting late (crash alerts after 15 min)', async () => {
+        const t = setup({
+            webhooks: { a: { url: 'https://hook/a', enabled: false } }
+        });
+        await t.queue.load('usr_1');
+        await t.queue.enqueue({
+            webhookId: 'a',
+            eventId: 'crash:g:loc:1',
+            payload: {}
+        });
+        await t.queue.enqueue({
+            webhookId: 'a',
+            eventId: 'audit:1',
+            payload: {}
+        });
+        t.advance(16 * 60_000);
+        t.hooks.a.enabled = true;
+        await t.queue.processDue();
+        expect(t.events).toContain('expired');
+        expect(t.post).toHaveBeenCalledTimes(1); // only the audit event
+        t.advance(25 * 60 * 60_000);
+        await t.queue.enqueue({
+            webhookId: 'a',
+            eventId: 'audit:2',
+            payload: {}
+        });
+        expect(t.queue.stats()).toEqual({ pending: 1, dead: 0 });
+    });
+
+    test('dropPending forgets queued posts but keeps dead ones', async () => {
+        const t = setup({
+            results: [{ kind: 'permanent', status: 404, error: 'gone' }]
+        });
+        await t.queue.load('usr_1');
+        await t.queue.enqueue({ webhookId: 'a', eventId: 'e1', payload: {} });
+        await t.queue.processDue();
+        t.hooks.a.enabled = false;
+        await t.queue.enqueue({ webhookId: 'a', eventId: 'e2', payload: {} });
+        expect(await t.queue.dropPending('a')).toBe(1);
+        expect(t.queue.stats('a')).toEqual({ pending: 0, dead: 1 });
+    });
+
+    test('logout/login while a post is in flight: the next session neither waits on it nor re-sends it', async () => {
+        const backing = {};
+        let release;
+        const t = setup({
+            backing,
+            results: [
+                () =>
+                    new Promise(
+                        (r) => (release = () => r({ kind: 'ok', status: 200 }))
+                    )
+            ]
+        });
+        await t.queue.load('usr_1');
+        await t.queue.enqueue({
+            webhookId: 'a',
+            eventId: 'e1',
+            payload: { n: 1 }
+        });
+        await t.queue.enqueue({
+            webhookId: 'b',
+            eventId: 'e2',
+            payload: { n: 2 }
+        });
+        const hung = t.queue.processDue();
+        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(t.post).toHaveBeenCalledTimes(1);
+        t.queue.reset();
+        await t.queue.load('usr_1');
+        // new session gets its own worker and skips the in-flight item
+        await t.queue.processDue();
+        expect(t.calls.map((c) => c.payload.n)).toEqual([1, 2]);
+        release();
+        await hung;
+        await t.queue.processDue();
+        expect(t.calls.map((c) => c.payload.n)).toEqual([1, 2]);
+        expect(t.queue.stats()).toEqual({ pending: 0, dead: 0 });
+        expect(await t.storage.loadQueue('usr_1')).toEqual([]);
+    });
 });

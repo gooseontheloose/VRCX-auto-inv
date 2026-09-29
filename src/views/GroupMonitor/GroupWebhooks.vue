@@ -1216,12 +1216,12 @@
                         <!-- group / URL / interval / filter -->
                         <div class="flex items-center gap-3 flex-wrap">
                             <span class="text-xs text-muted-foreground font-mono truncate max-w-sm opacity-60">{{ wh.url }}</span>
-                            <div v-if="!wh.groupId" class="flex items-center gap-1.5">
-                                <span class="text-xs text-destructive">{{ t('view.group_monitor.webhook.needs_group') }}</span>
-                                <Select :model-value="''" @update:model-value="(v) => updateWebhook(wh.id, { groupId: v })">
-                                    <SelectTrigger class="w-44 h-6 text-xs"><SelectValue :placeholder="t('view.group_monitor.webhook.group')" /></SelectTrigger>
+                            <div class="flex items-center gap-1.5">
+                                <span v-if="!wh.groupId" class="text-xs text-destructive">{{ t('view.group_monitor.webhook.needs_group') }}</span>
+                                <Select :model-value="wh.groupId || ''" @update:model-value="(v) => v && v !== wh.groupId && updateWebhook(wh.id, { groupId: v })">
+                                    <SelectTrigger class="w-44 h-6 text-xs"><SelectValue :placeholder="groupLabel(wh) || t('view.group_monitor.webhook.group')" /></SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</SelectItem>
+                                        <SelectItem v-for="g in allGroups" :key="g.id" :value="g.id">{{ g.name }}</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>

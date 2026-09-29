@@ -600,3 +600,229 @@ describe('Group Monitor pages do not own the service', () => {
         }
     });
 });
+
+describe('review fixes', () => {
+    test('login with cached groups (permissions not loaded yet) polls right away, no false permission error', async () => {
+        await seedAccount('usr_a', [auditHook()]);
+        addKicks(1, 3);
+        const store = freshApp();
+        const cached = {
+            id: GROUP_A,
+            name: 'Alpha',
+            myMember: { roleIds: [] }
+        };
+        await login('usr_a', [cached]);
+        expect(mocks.request).toHaveBeenCalled();
+        expect(store.pollStatus[GROUP_A]).toMatchObject({
+            ok: true,
+            error: null
+        });
+        expect(store.isPollingGroup(GROUP_A)).toBe(true);
+    });
+
+    test('a known missing audit permission is reported and not polled', async () => {
+        await seedAccount('usr_a', [auditHook()]);
+        const store = freshApp();
+        await login('usr_a', [
+            {
+                id: GROUP_A,
+                name: 'Alpha',
+                myMember: { permissions: ['group-members-viewall'] }
+            }
+        ]);
+        expect(mocks.request).not.toHaveBeenCalled();
+        expect(store.pollStatus[GROUP_A].error).toMatch(
+            /No audit-log permission/
+        );
+        expect(store.isPollingGroup(GROUP_A)).toBe(false);
+    });
+
+    test('background audit requests never raise error toasts', async () => {
+        await seedAccount('usr_a', [auditHook()]);
+        freshApp();
+        await login('usr_a');
+        expect(mocks.request).toHaveBeenCalled();
+        for (const [endpoint, opts] of mocks.request.mock.calls) {
+            expect(endpoint).toMatch(/auditLogs$/);
+            expect(opts.silentErrors).toBe(true);
+        }
+    });
+
+    test('a Discord post that never finishes does not stop audit polling', async () => {
+        await seedAccount('usr_a', [auditHook()]);
+        addKicks(1, 2);
+        const store = freshApp();
+        await login('usr_a');
+        mocks.fetch.mockImplementationOnce(() => new Promise(() => {}));
+        addKicks(3, 4);
+        const t0 = Date.now();
+        const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 + 61_000);
+        await fireTimers();
+        const polls = mocks.request.mock.calls.length;
+        for (let m = 2; m <= 5; m++) {
+            spy.mockReturnValue(t0 + m * 61_000);
+            await fireTimers();
+        }
+        vi.restoreAllMocks();
+        expect(mocks.request.mock.calls.length).toBeGreaterThanOrEqual(
+            polls + 4
+        );
+        expect(store.lastCycleAt).toBeGreaterThanOrEqual(t0 + 5 * 61_000);
+    });
+
+    test('logout + quick re-login while a post is in flight posts it only once', async () => {
+        await seedAccount('usr_a', [auditHook()]);
+        addKicks(1, 2);
+        freshApp();
+        await login('usr_a');
+        let release;
+        mocks.fetch.mockImplementationOnce(
+            () =>
+                new Promise((r) => {
+                    release = () =>
+                        r(new Response('{"id":"1"}', { status: 200 }));
+                })
+        );
+        addKicks(3, 3);
+        const t0 = Date.now();
+        const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 + 61_000);
+        await fireTimers();
+        expect(mocks.fetch).toHaveBeenCalledTimes(1);
+        await logout();
+        await login('usr_a');
+        release();
+        await flush(20);
+        spy.mockReturnValue(t0 + 70_000);
+        await fireTimers();
+        vi.restoreAllMocks();
+        const troll3 = discordPosts().filter((p) =>
+            JSON.stringify(p.body).includes('Troll3')
+        ).length;
+        expect(troll3).toBe(1);
+    });
+
+    test('legacy migration: leaderboards keep the viewed group, crash alerts the monitored group', async () => {
+        localStorage.setItem('gm-group-id', GROUP_A);
+        localStorage.setItem('gm-monitored-group', GROUP_B);
+        localStorage.setItem('gm-monitor-crash', '1');
+        await mocks.storage.setKv('gm-webhooks-v1', [
+            {
+                id: 'wh-kicks',
+                name: 'Kicks',
+                url: HOOK,
+                type: 'kick-board',
+                intervalMinutes: 60,
+                enabled: true
+            },
+            {
+                id: 'wh-crash',
+                name: 'Crash',
+                url: HOOK_B,
+                type: 'crash-alert',
+                enabled: true
+            }
+        ]);
+        const store = freshApp();
+        await login('usr_a', [
+            adminGroup(GROUP_A, 'Alpha'),
+            adminGroup(GROUP_B, 'Bravo')
+        ]);
+        localStorage.removeItem('gm-group-id');
+        localStorage.removeItem('gm-monitored-group');
+        localStorage.removeItem('gm-monitor-crash');
+        const byId = Object.fromEntries(
+            store.webhooks.map((w) => [w.id, w.groupId])
+        );
+        expect(byId).toEqual({ 'wh-kicks': GROUP_A, 'wh-crash': GROUP_B });
+        expect(store.getGroupSettings(GROUP_B).crashEnabled).toBe(true);
+        expect(store.getGroupSettings(GROUP_A).crashEnabled).toBe(false);
+    });
+
+    test('schedules run every N minutes since the last post, not on clock boundaries', async () => {
+        const base = Date.UTC(2026, 8, 29, 12, 59, 0);
+        const spy = vi.spyOn(Date, 'now').mockReturnValue(base);
+        mocks.idb.set(GROUP_A, [kick(1), kick(2)]);
+        const hook = {
+            id: 'wh-lb',
+            name: 'Top',
+            url: HOOK,
+            groupId: GROUP_A,
+            type: 'kick-board',
+            intervalMinutes: 60,
+            enabled: true
+        };
+        await seedAccount('usr_a', [hook], {});
+        // the previous build posted 4 minutes ago (migrated lastSent)
+        await mocks.storage.setKv('gm:usr_a:runtime', {
+            lastSent: { 'wh-lb': base - 4 * 60_000 }
+        });
+        freshApp();
+        await login('usr_a');
+        await flush(10);
+        spy.mockReturnValue(base + 61_000); // 13:00:01, a new hour
+        await fireTimers();
+        expect(mocks.fetch).not.toHaveBeenCalled();
+        spy.mockReturnValue(base + 56 * 60_000 + 1000); // 60 min after the last post
+        await fireTimers();
+        await flush(10);
+        vi.restoreAllMocks();
+        expect(discordPosts()).toHaveLength(1);
+    });
+
+    test('vote-kick boards with no data are held, not posted as "No data yet."', async () => {
+        await seedAccount(
+            'usr_a',
+            [
+                {
+                    id: 'wh-vk',
+                    name: 'VK',
+                    url: HOOK,
+                    groupId: GROUP_A,
+                    type: 'vk-targets',
+                    intervalMinutes: 60,
+                    enabled: true
+                }
+            ],
+            {}
+        );
+        const store = freshApp();
+        await login('usr_a');
+        expect(mocks.fetch).not.toHaveBeenCalled();
+        expect(store.webhookState['wh-vk'].lastError).toMatch(/No vote kicks/);
+        expect(store.lastSent['wh-vk']).toBeUndefined();
+    });
+
+    test('a 5xx keeps per-event posts in order; disabling a webhook drops its queued posts', async () => {
+        await seedAccount('usr_a', [auditHook()]);
+        addKicks(1, 2);
+        const store = freshApp();
+        await login('usr_a');
+        mocks.fetch.mockImplementationOnce(
+            async () => new Response('{"message":"oops"}', { status: 502 })
+        );
+        addKicks(3, 5);
+        const t0 = Date.now();
+        const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 + 61_000);
+        await fireTimers();
+        spy.mockReturnValue(t0 + 61_000 + 15_000);
+        await fireTimers();
+        const order = mocks.fetch.mock.calls.map(
+            ([, init]) =>
+                JSON.parse(init.body).embeds[0].description.match(
+                    /Troll\d+/
+                )?.[0]
+        );
+        expect(order).toEqual(['Troll3', 'Troll3', 'Troll4', 'Troll5']);
+
+        mocks.fetch.mockImplementation(
+            async () => new Response('{"message":"oops"}', { status: 502 })
+        );
+        addKicks(6, 7);
+        spy.mockReturnValue(t0 + 3 * 61_000);
+        await fireTimers();
+        expect(store.queueStats.pending).toBeGreaterThan(0);
+        await store.updateWebhook('wh-audit', { enabled: false });
+        vi.restoreAllMocks();
+        expect(store.queueStats.pending).toBe(0);
+    });
+});

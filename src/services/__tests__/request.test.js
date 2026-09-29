@@ -4,12 +4,40 @@ vi.mock('../../plugins/router.js', () => ({
     initRouter: vi.fn()
 }));
 
+vi.mock('vue-sonner', () => ({
+    toast: { error: vi.fn(), success: vi.fn() }
+}));
+
+import { toast } from 'vue-sonner';
+
 import {
+    $throw,
     buildRequestInit,
     parseResponse,
     processBulk,
     shouldIgnoreError
 } from '../request.js';
+
+describe('$throw', () => {
+    test('shows an error toast by default', () => {
+        toast.error.mockClear();
+        expect(() => $throw(500, 'boom', 'groups/grp_x/auditLogs')).toThrow();
+        expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+
+    test('silent: throws the same error without a toast', () => {
+        toast.error.mockClear();
+        let err;
+        try {
+            $throw(403, 'nope', 'groups/grp_x/auditLogs', true);
+        } catch (e) {
+            err = e;
+        }
+        expect(err.status).toBe(403);
+        expect(err.endpoint).toBe('groups/grp_x/auditLogs');
+        expect(toast.error).not.toHaveBeenCalled();
+    });
+});
 
 describe('buildRequestInit', () => {
     test('builds GET request with default method', () => {

@@ -145,17 +145,53 @@ function headerNumber(headers, name) {
  *
  * @param {string} url
  * @param {object} payload
- * @param {{ fetchImpl?: typeof fetch }} [opts]
+ * A request that has not finished after `timeoutMs` (default 30s) is aborted
+ * and reported as a network error ('retry', status 0), so one stalled
+ * connection can never block the delivery queue.
+ *
+ * @param {string} url
+ * @param {object} payload
+ * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
  * @returns {Promise<{kind: 'ok'|'rate_limited'|'retry'|'permanent', status: number, retryAfterMs?: number, global?: boolean, bucketResetMs?: number|null, error?: string}>}
  */
 export async function postDiscordWebhook(url, payload, opts = {}) {
+    const timeoutMs = opts.timeoutMs ?? POST_TIMEOUT_MS;
+    const controller =
+        typeof AbortController === 'function' ? new AbortController() : null;
+    let timer = null;
+    const timedOut = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            controller?.abort();
+            resolve({
+                kind: 'retry',
+                status: 0,
+                error: `Timed out after ${Math.round(timeoutMs / 1000)}s`
+            });
+        }, timeoutMs);
+    });
+    try {
+        // race as well as abort: a fetch that ignores the signal still can't hang us
+        return await Promise.race([
+            sendAndClassify(url, payload, opts, controller?.signal),
+            timedOut
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/** Default timeout for one webhook POST. */
+export const POST_TIMEOUT_MS = 30_000;
+
+async function sendAndClassify(url, payload, opts, signal) {
     const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
     let res;
     try {
         res = await fetchImpl(withWait(url), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(clampPayload(payload))
+            body: JSON.stringify(clampPayload(payload)),
+            ...(signal ? { signal } : {})
         });
     } catch (err) {
         return {

@@ -397,12 +397,24 @@ function _backgroundPolls(groupId) {
 }
 
 let _feedAttached = false;
+// Entries pushed by the background service while the history backfill runs are
+// merged (deduped by id) once it finishes, so none go missing until a reload.
+let _feedBuffer = [];
+watch([auditAutoLoading, isLoadingAudit], ([autoLoading, loading]) => {
+    if (autoLoading || loading || !_feedBuffer.length) return;
+    const buffered = _feedBuffer;
+    _feedBuffer = [];
+    for (const b of buffered) mergeFetchedEntries(b.groupId, b.entries, b.totalCount);
+});
 function _attachBackgroundFeed() {
     if (_feedAttached) return;
     try {
         useGroupMonitorStore().onAuditEntries((groupId, entries, totalCount) => {
             // don't race the history backfill's own merge/meta bookkeeping
-            if (auditAutoLoading.value || isLoadingAudit.value) return;
+            if (auditAutoLoading.value || isLoadingAudit.value) {
+                if (groupId === selectedGroupId.value) _feedBuffer.push({ groupId, entries, totalCount });
+                return;
+            }
             mergeFetchedEntries(groupId, entries, totalCount);
         });
         _feedAttached = true;

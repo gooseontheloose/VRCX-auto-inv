@@ -179,13 +179,23 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         return groupStore.currentUserGroups.has(groupId);
     }
 
+    /**
+     * 'yes' / 'no', or 'unknown' while only the cached group list is loaded
+     * (it has roleIds but no permissions). Unknown is polled anyway: the API
+     * answers authoritatively, and a failed permissions fetch at login must
+     * not switch background polling off for the whole session.
+     * @returns {'yes'|'no'|'unknown'}
+     */
+    function auditPermission(groupId) {
+        const g = groupStore.currentUserGroups.get(groupId);
+        if (!g) return groupStore.currentUserGroupsInit ? 'no' : 'unknown';
+        const perms = g.myMember?.permissions;
+        if (!Array.isArray(perms)) return 'unknown';
+        return perms.includes('*') || perms.includes(AUDIT_PERM) ? 'yes' : 'no';
+    }
+
     function hasAuditPermission(groupId) {
-        const perms =
-            groupStore.currentUserGroups.get(groupId)?.myMember?.permissions;
-        return (
-            Array.isArray(perms) &&
-            (perms.includes('*') || perms.includes(AUDIT_PERM))
-        );
+        return auditPermission(groupId) === 'yes';
     }
 
     function getGroupSettings(groupId) {
@@ -211,7 +221,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         return (
             serviceState.value === 'running' &&
             polledGroupIds.value.includes(groupId) &&
-            hasAuditPermission(groupId)
+            auditPermission(groupId) !== 'no'
         );
     }
 
@@ -264,7 +274,8 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             type === 'failed' ||
             type === 'rate_limited' ||
             type === 'dead' ||
-            type === 'dropped'
+            type === 'dropped' ||
+            type === 'expired'
         ) {
             setWebhookState(item.webhookId, {
                 sending: false,
@@ -333,16 +344,24 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             (await monitorStorage.getKv(LEGACY_LASTSENT_KEY)) ??
             readLocalJson(LEGACY_LASTSENT_KEY) ??
             {};
-        const legacyGroup =
-            readLocal('gm-monitored-group') || readLocal('gm-group-id') || '';
+        // The old build built leaderboards from the group being viewed
+        // (gm-group-id); only crash checks used gm-monitored-group.
+        const viewedGroup = readLocal('gm-group-id') || '';
+        const crashGroup = readLocal('gm-monitored-group') || viewedGroup;
         const legacyCrash = readLocal('gm-monitor-crash') === '1';
-        if (!Array.isArray(legacy) && !legacyGroup) return null;
+        if (!Array.isArray(legacy) && !crashGroup) return null;
         const hooks = (Array.isArray(legacy) ? legacy : []).map((w) =>
-            normaliseWebhook(w, legacyGroup)
+            normaliseWebhook(
+                w,
+                w?.type === 'crash-alert'
+                    ? crashGroup
+                    : viewedGroup || crashGroup
+            )
         );
         const gs = {};
-        if (legacyGroup)
-            gs[legacyGroup] = {
+        if (viewedGroup) gs[viewedGroup] = defaultGroupSettings();
+        if (crashGroup)
+            gs[crashGroup] = {
                 ...defaultGroupSettings(),
                 crashEnabled: legacyCrash
             };
@@ -551,7 +570,13 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                 if (gen !== generation) return;
                 lastCycleAt.value = Date.now();
                 await saveRuntime();
-                await queue.processDue();
+                // not awaited: delivery runs on its own, the cycle never waits on Discord
+                queue
+                    .processDue()
+                    .then(refreshQueueStats)
+                    .catch((err) =>
+                        console.error('[GroupMonitor] delivery failed:', err)
+                    );
                 refreshQueueStats();
             } catch (err) {
                 console.error('[GroupMonitor] cycle failed:', err);
@@ -567,7 +592,9 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
     async function fetchAuditPage(groupId, offset) {
         const data = await request(`groups/${groupId}/auditLogs`, {
             method: 'GET',
-            params: { n: AUDIT_PAGE_SIZE, offset }
+            params: { n: AUDIT_PAGE_SIZE, offset },
+            // failures show in the Webhooks page status, not as toasts
+            silentErrors: true
         });
         const entries = Array.isArray(data?.results)
             ? data.results
@@ -578,7 +605,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
     }
 
     async function pollGroup(groupId, gen) {
-        if (!hasAuditPermission(groupId)) {
+        if (auditPermission(groupId) === 'no') {
             pollStatus.value = {
                 ...pollStatus.value,
                 [groupId]: {
@@ -839,6 +866,12 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         const name = groupName(wh.groupId);
         if (isVoteKickType(wh.type)) {
             const vkEvents = await loadVoteKickData(wh.groupId);
+            if (!vkEvents.length) {
+                return {
+                    payload: null,
+                    error: 'No vote kicks recorded in this group yet'
+                };
+            }
             return {
                 payload: buildLeaderboardPayload(wh, name, { vkEvents }, now)
             };
@@ -876,9 +909,8 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             )
                 continue;
             const intervalMs = wh.intervalMinutes * 60_000;
-            const slot = Math.floor(now / intervalMs);
             const last = Number(lastSent.value[wh.id]) || 0;
-            if (last && Math.floor(last / intervalMs) >= slot) continue;
+            if (last && now - last < intervalMs) continue;
             try {
                 const { payload, error } = await buildScheduledPayload(wh, now);
                 if (gen !== generation) return;
@@ -891,10 +923,12 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                     });
                     continue;
                 }
-                // A missed slot (VRCX closed) collapses into this single post.
+                // Missed intervals (VRCX closed) collapse into this single post.
+                // Keyed on the previous post, so if lastSent is lost in a crash
+                // the retry dedupes instead of posting twice.
                 await queue.enqueue({
                     webhookId: wh.id,
-                    eventId: `schedule:${wh.id}:${slot * intervalMs}`,
+                    eventId: `schedule:${wh.id}:${last}`,
                     payload
                 });
                 lastSent.value = { ...lastSent.value, [wh.id]: now };
@@ -967,6 +1001,11 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             next.groupName = groupName(next.groupId);
         webhooks.value = webhooks.value.map((w) => (w.id === id ? next : w));
         await saveConfig();
+        // Don't hold stale posts for a switched-off webhook and dump them on re-enable.
+        if (!next.enabled && current.enabled) {
+            await queue.dropPending(id);
+            refreshQueueStats();
+        }
         if (next.enabled && !current.enabled) kick();
         return { ok: true, webhook: next };
     }
@@ -1098,6 +1137,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         polledGroupIds,
         isPollingGroup,
         hasAuditPermission,
+        auditPermission,
         getGroupSettings,
         setGroupSettings,
         setEnabled,

@@ -3,19 +3,31 @@
 // - enqueue() dedupes on (account, webhookId, eventId) using a persisted
 //   ledger, so the same audit entry / crash / schedule slot is never posted
 //   twice, even across restarts.
-// - processDue() is a single serial worker. A 429 blocks only that webhook URL
-//   (or everything, for a global limit) for Discord's retry_after; 5xx and
-//   network errors back off exponentially; other 4xx are permanent.
+// - processDue() is a single serial worker, FIFO per webhook: while an item
+//   waits to be retried, later items for that webhook wait behind it. A 429
+//   blocks only that webhook URL (or everything, for a global limit) for
+//   Discord's retry_after; 5xx back off exponentially; other 4xx are permanent.
+// - Network errors / timeouts (status 0) never use up the attempt budget: the
+//   item keeps retrying (at most every maxDelayMs) until it is sent or expires.
+// - Items older than their max age (15 min for crash alerts, 24h otherwise)
+//   are dropped as 'expired' instead of being posted late.
 // - Items that exhaust their attempts become 'dead' and stay visible in the UI
-//   until retried or cleared.
+//   until retried or cleared (or pruned after deadRetentionMs).
 
 export const QUEUE_DEFAULTS = Object.freeze({
     maxAttempts: 6,
     baseDelayMs: 10_000,
     maxDelayMs: 10 * 60_000,
     maxRateLimitHits: 10,
-    dedupeRetentionMs: 14 * 24 * 60 * 60_000
+    dedupeRetentionMs: 14 * 24 * 60 * 60_000,
+    crashMaxAgeMs: 15 * 60_000,
+    maxAgeMs: 24 * 60 * 60_000,
+    deadRetentionMs: 7 * 24 * 60 * 60_000
 });
+
+function isTestItem(item) {
+    return String(item.eventId).startsWith('test:');
+}
 
 let _seq = 0;
 function newId(now) {
@@ -50,6 +62,10 @@ export function createDeliveryQueue(deps) {
     const blockedUntil = new Map(); // url -> ms
     let globalBlockedUntil = 0;
     let working = null;
+    let workingGen = -1;
+    // Ids of items whose POST is still in flight. Survives logout/login so a
+    // new session never re-sends an item the old session is still sending.
+    const inFlight = new Set();
 
     function dedupeKey(webhookId, eventId) {
         return `${userId}|${webhookId}|${eventId}`;
@@ -64,10 +80,22 @@ export function createDeliveryQueue(deps) {
         const gen = generation;
         const loaded = await deps.storage.loadQueue(forUserId);
         if (gen !== generation) return;
-        // Anything that was 'sending' when VRCX closed is retried.
-        items = loaded.map((i) =>
-            i.status === 'sending' ? { ...i, status: 'pending' } : i
-        );
+        const t = now();
+        const kept = [];
+        for (const raw of loaded) {
+            // Anything that was 'sending' when VRCX closed is retried.
+            const i =
+                raw.status === 'sending' ? { ...raw, status: 'pending' } : raw;
+            if (
+                i.status === 'dead' &&
+                t - (i.createdAt ?? t) > opts.deadRetentionMs
+            ) {
+                deps.storage.deleteQueueItem(i.id).catch(() => {});
+                continue;
+            }
+            kept.push(i);
+        }
+        items = kept;
         await deps.storage
             .pruneDedupe(now() - opts.dedupeRetentionMs)
             .catch(() => {});
@@ -134,18 +162,34 @@ export function createDeliveryQueue(deps) {
         return (blockedUntil.get(url) ?? 0) > t;
     }
 
+    function maxAgeOf(item) {
+        return String(item.eventId).startsWith('crash:')
+            ? opts.crashMaxAgeMs
+            : opts.maxAgeMs;
+    }
+
     function pickNext(t) {
+        // Webhooks with an earlier item still waiting: keep their order.
+        const held = new Set();
         for (const item of items) {
-            if (item.status !== 'pending' || item.nextAt > t) continue;
+            if (item.status !== 'pending') continue;
+            if (inFlight.has(item.id)) {
+                // still being sent by a previous session: keep order behind it
+                held.add(item.webhookId);
+                continue;
+            }
+            if (t - (item.createdAt ?? t) > maxAgeOf(item))
+                return { item, expired: true };
+            const bypass = item.force || isTestItem(item);
+            if (!bypass && held.has(item.webhookId)) continue;
+            if (item.nextAt > t) {
+                if (!bypass) held.add(item.webhookId);
+                continue;
+            }
             const wh = deps.resolveWebhook(item.webhookId);
             if (!wh) return { item, wh: null };
             // Test sends (eventId "test:…") go out even while the webhook is disabled.
-            if (
-                !wh.enabled &&
-                !item.force &&
-                !String(item.eventId).startsWith('test:')
-            )
-                continue;
+            if (!wh.enabled && !bypass) continue;
             if (isBlocked(wh.url, t)) continue;
             return { item, wh };
         }
@@ -172,12 +216,21 @@ export function createDeliveryQueue(deps) {
     async function sendOne(item, wh, gen) {
         item.status = 'sending';
         emit('sending', item);
-        const result = await deps.post(wh.url, item.payload);
+        inFlight.add(item.id);
+        let result;
+        try {
+            result = await deps.post(wh.url, item.payload);
+        } finally {
+            inFlight.delete(item.id);
+        }
         if (gen !== generation) {
             // Logged out mid-send: still forget a delivered item so the next
-            // login does not post it again.
-            if (result.kind === 'ok')
+            // session (which may have reloaded it from storage) does not post
+            // it again.
+            if (result.kind === 'ok') {
+                items = items.filter((i) => i.id !== item.id);
                 await deps.storage.deleteQueueItem(item.id).catch(() => {});
+            }
             return;
         }
         const t = now();
@@ -206,8 +259,24 @@ export function createDeliveryQueue(deps) {
             emit('rate_limited', item, result);
             return;
         }
-        item.attempts += 1;
         item.lastError = result.error ?? `HTTP ${result.status}`;
+        if (result.kind === 'retry' && !result.status) {
+            // Offline / timed out: says nothing about the webhook itself, so
+            // keep trying until it goes through or the item expires.
+            item.networkFailures = (item.networkFailures ?? 0) + 1;
+            item.status = 'pending';
+            item.nextAt =
+                t +
+                Math.min(
+                    opts.maxDelayMs,
+                    opts.baseDelayMs *
+                        2 ** Math.min(20, item.networkFailures - 1)
+                );
+            await persist(item);
+            emit('failed', item, result);
+            return;
+        }
+        item.attempts += 1;
         if (result.kind === 'permanent' || item.attempts >= opts.maxAttempts) {
             item.status = 'dead';
             await persist(item);
@@ -231,7 +300,9 @@ export function createDeliveryQueue(deps) {
      * @returns {Promise<void>}
      */
     function processDue() {
-        if (working) return working;
+        // A worker from a previous session (logout/login) doesn't count: it
+        // stops at its next check, and this session gets its own.
+        if (working && workingGen === generation) return working;
         const gen = generation;
         const run = (async () => {
             await null; // always yield first so `working` is set before the loop can finish
@@ -240,6 +311,13 @@ export function createDeliveryQueue(deps) {
                     if (gen !== generation || !userId) return;
                     const next = pickNext(now());
                     if (!next) return;
+                    if (next.expired) {
+                        await remove(next.item);
+                        emit('expired', next.item, {
+                            error: 'Expired before it could be delivered'
+                        });
+                        continue;
+                    }
                     if (!next.wh) {
                         await remove(next.item);
                         emit('dropped', next.item, {
@@ -263,6 +341,7 @@ export function createDeliveryQueue(deps) {
             }
         })();
         working = run;
+        workingGen = gen;
         return run;
     }
 
@@ -292,6 +371,18 @@ export function createDeliveryQueue(deps) {
         for (const item of mine) await remove(item);
     }
 
+    /** Forget queued (not dead, not in flight) posts for a webhook, e.g. when it is disabled. */
+    async function dropPending(webhookId) {
+        const mine = items.filter(
+            (i) =>
+                i.webhookId === webhookId &&
+                i.status === 'pending' &&
+                !inFlight.has(i.id)
+        );
+        for (const item of mine) await remove(item);
+        return mine.length;
+    }
+
     function stats(webhookId = null) {
         let pending = 0;
         let dead = 0;
@@ -318,6 +409,7 @@ export function createDeliveryQueue(deps) {
         retryDead,
         clearDead,
         dropWebhook,
+        dropPending,
         stats,
         nextDueAt,
         get items() {

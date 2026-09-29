@@ -40,6 +40,8 @@ beforeAll(async () => {
             } else if (path === '/global') {
                 res.writeHead(429, { 'Content-Type': 'application/json' });
                 res.end('{"retry_after":1,"global":true}');
+            } else if (path === '/hang') {
+                // never answers: the client has to time out on its own
             } else if (path === '/boom') {
                 res.writeHead(502);
                 res.end('bad gateway');
@@ -53,7 +55,13 @@ beforeAll(async () => {
     baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
-afterAll(() => new Promise((r) => server.close(r)));
+afterAll(
+    () =>
+        new Promise((r) => {
+            server.closeAllConnections?.();
+            server.close(r);
+        })
+);
 
 describe('isValidDiscordWebhookUrl', () => {
     test.each([
@@ -178,5 +186,34 @@ describe('postDiscordWebhook against a local mock server', () => {
         const res = await postDiscordWebhook('http://127.0.0.1:1/nothing', {});
         expect(res.kind).toBe('retry');
         expect(res.status).toBe(0);
+    });
+
+    test('a request that never finishes times out as a retryable network error', async () => {
+        const started = Date.now();
+        const res = await postDiscordWebhook(
+            `${baseUrl}/hang`,
+            { content: 'x' },
+            { timeoutMs: 300 }
+        );
+        expect(res).toMatchObject({ kind: 'retry', status: 0 });
+        expect(res.error).toContain('Timed out');
+        expect(Date.now() - started).toBeLessThan(5000);
+    });
+
+    test('times out even if fetch ignores the abort signal', async () => {
+        let signal;
+        const res = await postDiscordWebhook(
+            'https://discord.com/api/webhooks/1/x',
+            {},
+            {
+                timeoutMs: 50,
+                fetchImpl: (_url, init) => {
+                    signal = init.signal;
+                    return new Promise(() => {});
+                }
+            }
+        );
+        expect(res).toMatchObject({ kind: 'retry', status: 0 });
+        expect(signal?.aborted).toBe(true);
     });
 });
