@@ -20,6 +20,7 @@ import { useGeneralSettingsStore } from './settings/general';
 import { useQuickSearchStore } from './quickSearch';
 import { useGroupStore } from './group';
 import { useGroupInviteStore } from './groupInvite';
+import { useGroupMonitorStore } from './groupMonitor';
 import { useInstanceStore } from './instance';
 import { useInviteStore } from './invite';
 import { useLaunchStore } from './launch';
@@ -160,6 +161,7 @@ export function createGlobalStores() {
         sharedFeed: useSharedFeedStore(),
         updateLoop: useUpdateLoopStore(),
         auth: useAuthStore(),
+        groupMonitor: useGroupMonitorStore(),
         vrcStatus: useVrcStatusStore(),
         charts: useChartsStore(),
         dashboard: useDashboardStore(),
@@ -180,6 +182,7 @@ export {
     useGameLogStore,
     useGroupStore,
     useGroupInviteStore,
+    useGroupMonitorStore,
     useInstanceStore,
     useInviteStore,
     useLaunchStore,

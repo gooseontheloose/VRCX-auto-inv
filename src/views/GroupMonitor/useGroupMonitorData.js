@@ -5,7 +5,7 @@
  * and shared reactively — navigating between pages never re-downloads history.
  */
 
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { request } from '../../services/request';
 import sqliteService from '../../services/sqlite';
 import {
@@ -17,6 +17,8 @@ import {
 } from '../../services/auditLogDb';
 import { showUserDialog } from '../../coordinators/userCoordinator';
 import { toast } from 'vue-sonner';
+import { watchState } from '../../services/watchState';
+import { useGroupMonitorStore } from '../../stores/groupMonitor';
 
 // ── Module-level singleton state ──────────────────────────────────────────────
 // These refs are created ONCE at import time and shared across all 5 pages.
@@ -41,12 +43,9 @@ const profileCache = ref(new Map());
 const profileLookupInProgress = ref(new Set());
 const resolvedUserNames = ref({});
 
-// ── Webhook singleton (shared across all 5 GroupMonitor pages) ────────────────
-const webhookConfigs = ref([]);
-const webhookSendingIds = ref(new Set());
-const webhookStatus = ref({});
-const webhookLastSent = ref({});
-let _webhookInitDone = false;
+// Webhooks, crash alerts and background polling live in the groupMonitor
+// Pinia store (src/stores/groupMonitor.js), which runs from login regardless
+// of which page is open. This module only holds what the pages display.
 
 // ── Group audit permission cache ──────────────────────────────────────────────
 const groupAuditPermIds = ref(new Set());    // groupIds where user has group-audit-view
@@ -60,7 +59,9 @@ const groupPermCheckDone = ref(false);
         if (p) groupAuditPermIds.value = new Set(JSON.parse(p));
         const d = localStorage.getItem('gm-group-audit-data-ids');
         if (d) groupsWithCachedData.value = new Set(JSON.parse(d));
-    } catch {}
+    } catch {
+        // corrupt cache: start empty, it is rebuilt on the next group load
+    }
 })();
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -360,23 +361,54 @@ async function autoLoadAuditPages(groupId, startPage, total) {
 }
 
 // ── Core load functions ───────────────────────────────────────────────────────
-async function pollNewAuditLogs() {
+async function pollNewAuditLogs({ force = false } = {}) {
     const groupId = selectedGroupId.value;
-    if (!groupId || isFetchingNewLogs.value || auditAutoLoading.value) return;
+    if (!groupId || isFetchingNewLogs.value) return;
+    // The background service already polls monitored groups and pushes the
+    // entries here (see _attachBackgroundFeed); don't hit the API twice.
+    if (!force && _backgroundPolls(groupId)) return;
     isFetchingNewLogs.value = true;
     try {
         const { entries, totalCount } = await fetchAuditPage(groupId, 0);
-        if (entries.length > 0) {
-            const before = auditLogs.value.length;
-            auditLogs.value = mergeAuditEntries(auditLogs.value, entries);
-            auditTotal.value = totalCount;
-            if (auditLogs.value.length !== before) {
-                const novel = entries.filter((e) => !auditLogs.value.slice(entries.length).find((x) => x.id === e.id));
-                await dbSaveAuditBatch(groupId, novel.length ? novel : entries, totalCount, auditFullyLoaded.value);
-            }
-        }
-    } catch { /* silent - poll failures are non-fatal */ }
-    finally { isFetchingNewLogs.value = false; }
+        mergeFetchedEntries(groupId, entries, totalCount);
+    } catch (err) {
+        console.debug('[GroupMonitor] poll failed (non-fatal):', err);
+    } finally {
+        isFetchingNewLogs.value = false;
+    }
+}
+
+function mergeFetchedEntries(groupId, entries, totalCount) {
+    if (groupId !== selectedGroupId.value || !entries?.length) return;
+    const known = new Set(auditLogs.value.map((e) => e.id));
+    const novel = entries.filter((e) => !known.has(e.id));
+    if (Number.isFinite(totalCount)) auditTotal.value = Math.max(auditTotal.value, totalCount);
+    if (!novel.length) return;
+    auditLogs.value = [...novel, ...auditLogs.value];
+    dbSaveAuditBatch(groupId, novel, auditTotal.value, auditFullyLoaded.value);
+}
+
+function _backgroundPolls(groupId) {
+    try {
+        return useGroupMonitorStore().isPollingGroup(groupId);
+    } catch {
+        return false;
+    }
+}
+
+let _feedAttached = false;
+function _attachBackgroundFeed() {
+    if (_feedAttached) return;
+    try {
+        useGroupMonitorStore().onAuditEntries((groupId, entries, totalCount) => {
+            // don't race the history backfill's own merge/meta bookkeeping
+            if (auditAutoLoading.value || isLoadingAudit.value) return;
+            mergeFetchedEntries(groupId, entries, totalCount);
+        });
+        _feedAttached = true;
+    } catch (err) {
+        console.warn('[GroupMonitor] could not attach to background feed:', err);
+    }
 }
 
 async function loadAuditLogs(groupId) {
@@ -521,18 +553,20 @@ function refreshAll() {
     loadVoteKickHistory();
     if (selectedGroupId.value) {
         loadLocationHistory(selectedGroupId.value);
-        pollNewAuditLogs();
+        pollNewAuditLogs({ force: true });
     }
 }
 
-// ── Singleton polling timer ───────────────────────────────────────────────────
-// Reference-counted so polling runs only while at least one GM page is mounted.
+// ── Singleton UI refresh timer ────────────────────────────────────────────────
+// Reference-counted display refresh for the page being viewed. Webhooks and
+// alerts do NOT depend on this; they run from the groupMonitor store.
 let _mountCount = 0;
 let _pollInterval = null;
 let _vkPollInterval = null;
 
 function startPolling() {
     _mountCount++;
+    _attachBackgroundFeed();
     if (_pollInterval) return;
     _pollInterval = setInterval(pollNewAuditLogs, 60_000);
     _vkPollInterval = setInterval(loadVoteKickHistory, 90_000);
@@ -547,6 +581,30 @@ function stopPolling() {
     _vkPollInterval = null;
     autoLoadAbort = true;
 }
+
+// Account switch / logout: drop the previous account's view state so the next
+// account never sees (or re-uses) it. Pages remount after login because
+// MainLayout is v-if'd on isLoggedIn.
+watch(
+    () => watchState.isLoggedIn,
+    (loggedIn) => {
+        if (loggedIn) return;
+        autoLoadAbort = true;
+        selectedGroupId.value = '';
+        auditLogs.value = [];
+        auditTotal.value = 0;
+        auditGroupMeta.value = null;
+        auditFullyLoaded.value = false;
+        auditLimitReached.value = false;
+        auditAutoLoading.value = false;
+        auditError.value = '';
+        vkEvents.value = [];
+        locationHistory.value = [];
+        resolvedUserNames.value = {};
+        profileCache.value = new Map();
+        _nameQueue = [];
+    }
+)
 
 // ── Warn leaderboards (derived from auditLogs singleton) ─────────────────────
 const warnLeaderboard = computed(() => {
@@ -588,94 +646,17 @@ function updateGroupAuditPerms(groups) {
     }
     groupAuditPermIds.value = ids;
     groupPermCheckDone.value = true;
-    try { localStorage.setItem('gm-group-audit-perms', JSON.stringify([...ids])); } catch {}
+    try { localStorage.setItem('gm-group-audit-perms', JSON.stringify([...ids])); } catch { /* storage full/blocked: cache only */ }
 }
 
 function markGroupHasData(groupId) {
     if (groupsWithCachedData.value.has(groupId)) return;
     groupsWithCachedData.value = new Set([...groupsWithCachedData.value, groupId]);
-    try { localStorage.setItem('gm-group-audit-data-ids', JSON.stringify([...groupsWithCachedData.value])); } catch {}
+    try { localStorage.setItem('gm-group-audit-data-ids', JSON.stringify([...groupsWithCachedData.value])); } catch { /* storage full/blocked: cache only */ }
 }
 
 function isGroupPermLost(groupId) {
     return groupsWithCachedData.value.has(groupId) && !groupAuditPermIds.value.has(groupId);
-}
-
-// ── SQLite-backed settings (webhook persistence) ──────────────────────────────
-let _settingsTableReady = false;
-async function ensureSettingsTable() {
-    if (_settingsTableReady) return;
-    await sqliteService.executeNonQuery(
-        `CREATE TABLE IF NOT EXISTS paw_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`
-    );
-    _settingsTableReady = true;
-}
-
-async function dbGetSetting(key) {
-    await ensureSettingsTable();
-    let val = null;
-    await sqliteService.execute(
-        (row) => { val = row[0]; },
-        `SELECT value FROM paw_settings WHERE key = '${key}'`
-    );
-    try { return val !== null ? JSON.parse(val) : null; } catch { return null; }
-}
-
-async function dbSetSetting(key, value) {
-    await ensureSettingsTable();
-    const escaped = JSON.stringify(value).replace(/'/g, "''");
-    await sqliteService.executeNonQuery(
-        `INSERT OR REPLACE INTO paw_settings (key, value) VALUES ('${key}', '${escaped}')`
-    );
-}
-
-async function initWebhooks() {
-    if (_webhookInitDone) return;
-    _webhookInitDone = true;
-    try {
-        // Load webhook configs from SQLite; fall back to localStorage for migration
-        const configs = await dbGetSetting('gm-webhooks-v1');
-        if (configs && Array.isArray(configs)) {
-            webhookConfigs.value = configs;
-        } else {
-            const raw = localStorage.getItem('gm-webhooks-v1');
-            if (raw) {
-                try {
-                    webhookConfigs.value = JSON.parse(raw);
-                    await saveWebhookConfigs();
-                } catch {}
-            }
-        }
-        // Load lastSent timestamp map
-        const lastSent = await dbGetSetting('gm-webhook-lastsent');
-        if (lastSent && typeof lastSent === 'object') {
-            webhookLastSent.value = lastSent;
-        } else {
-            const raw = localStorage.getItem('gm-webhook-lastsent');
-            if (raw) { try { webhookLastSent.value = JSON.parse(raw); } catch {} }
-        }
-    } catch (e) {
-        console.warn('[GroupMonitor] initWebhooks SQLite error, falling back to localStorage:', e);
-        try { const raw = localStorage.getItem('gm-webhooks-v1'); if (raw) webhookConfigs.value = JSON.parse(raw); } catch {}
-        try { const raw = localStorage.getItem('gm-webhook-lastsent'); if (raw) webhookLastSent.value = JSON.parse(raw); } catch {}
-    }
-}
-
-async function saveWebhookConfigs() {
-    try {
-        await dbSetSetting('gm-webhooks-v1', webhookConfigs.value);
-    } catch (e) {
-        console.warn('[GroupMonitor] SQLite webhook save failed:', e);
-        try { localStorage.setItem('gm-webhooks-v1', JSON.stringify(webhookConfigs.value)); } catch {}
-    }
-}
-
-async function saveWebhookLastSent() {
-    try {
-        await dbSetSetting('gm-webhook-lastsent', webhookLastSent.value);
-    } catch {
-        try { localStorage.setItem('gm-webhook-lastsent', JSON.stringify(webhookLastSent.value)); } catch {}
-    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -730,14 +711,6 @@ export function useGroupMonitorData() {
         // polling lifecycle
         startPolling,
         stopPolling,
-        // webhook singleton (SQLite-backed)
-        webhookConfigs,
-        webhookSendingIds,
-        webhookStatus,
-        webhookLastSent,
-        initWebhooks,
-        saveWebhookConfigs,
-        saveWebhookLastSent,
         // warn leaderboards
         warnLeaderboard,
         mostWarnedLeaderboard,
