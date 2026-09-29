@@ -1,4 +1,4 @@
-import { ref, watch } from 'vue';
+import { onScopeDispose, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 
 import {
@@ -29,8 +29,8 @@ import {
 } from '../shared/utils/airiLookupQueue';
 import {
     friendRequest,
+    groupRequest,
     notificationRequest,
-    queryRequest,
     userRequest
 } from '../api';
 import {
@@ -40,6 +40,7 @@ import {
 } from '../coordinators/friendRelationshipCoordinator';
 import { airiUserCache } from '../services/database/airiUserCache';
 import { database } from '../services/database';
+import { onVrchatRateLimit } from '../services/vrchatRateLimit';
 import { useFriendStore } from './friend';
 import { useGameLogStore } from './gameLog';
 import { useGroupInviteStore } from './groupInvite';
@@ -175,13 +176,14 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     /**
      * Start VRCX's own notification refresh (the same as the Notifications
      * page refresh button) without waiting for it, when the last one is
-     * older than NOTIFICATION_STALE_MS.
+     * older than NOTIFICATION_STALE_MS. Not while VRChat rate limits us.
      */
     function refreshNotificationsInBackground() {
         const notificationStore = useNotificationStore();
         const now = Date.now();
         if (
             isNotificationRefreshRunning ||
+            vrchatCooldownSec() > 0 ||
             notificationStore.isNotificationsLoading ||
             now - notificationsRefreshedAt < NOTIFICATION_STALE_MS ||
             typeof notificationStore.refreshNotifications !== 'function'
@@ -524,9 +526,9 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     async function runLookup(task) {
         const { kind, userId } = task.data;
         if (kind === 'group') {
-            const args = await queryRequest.fetch('representedGroup', {
-                userId
-            });
+            // Straight to the API: the query layer would retry a 429 on its
+            // own, and the queue is already the cache and the pacer.
+            const args = await groupRequest.getRepresentedGroup({ userId });
             const json = args?.json;
             // Only a successful answer without a group means "no group".
             const name = json && typeof json.name === 'string' ? json.name : '';
@@ -1000,6 +1002,11 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         recordAction('friend-requests', '');
         const notificationStore = useNotificationStore();
         const isLoading = Boolean(notificationStore.isNotificationsLoading);
+        if (isLoading && !friendRequestSnapshot) {
+            // VRCX marks every request expired while it reloads (e.g. right
+            // after login): an answer now would wrongly say "none pending".
+            return [503, { ok: false, error: 'loading', retryAfterSec: 10 }];
+        }
         let source = notificationStore.notificationTable?.data;
         if (!isLoading) {
             friendRequestSnapshot = Array.isArray(source)
@@ -1009,7 +1016,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
                       )
                       .map((n) => ({ ...n }))
                 : [];
-        } else if (friendRequestSnapshot) {
+        } else {
             source = friendRequestSnapshot;
         }
         refreshNotificationsInBackground();
@@ -1266,6 +1273,16 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
             }
         },
         { flush: 'sync' }
+    );
+
+    // A 429 anywhere in VRCX (e.g. core's own profile fetches for joiners)
+    // pauses AIRI's lookups and friend actions too.
+    onScopeDispose(
+        onVrchatRateLimit(() => {
+            if (enabled.value) {
+                lookupQueue.reportRateLimit();
+            }
+        })
     );
 
     // Present players whose lookups were dropped (queue cleared, budget

@@ -4,11 +4,13 @@
  * the current instance.
  *
  * - Token bucket shared by every lookup: one call per `intervalMs`, bursts of
- *   up to `burst`, plus a hard safety ceiling of `hourlyCeiling` calls per
- *   hour (a fixed window that resets every hour). There is no per-session cap.
+ *   up to `burst`, plus a hard safety ceiling of `hourlyCeiling` calls in any
+ *   sliding 60 minutes. There is no per-session cap.
  * - HTTP 429 pauses the whole queue with exponential backoff
  *   (`backoffBaseMs` doubling up to `backoffMaxMs`) and is reported through
  *   `onRateLimit` so other senders (PAW's auto-inviter) can back off too.
+ *   More 429s while already paused (other senders hitting the same limit)
+ *   don't escalate the backoff.
  * - Priorities: explicit requests first (FIFO), then present players (newest
  *   first), then the backlog (retries after a failure, FIFO).
  * - `precheck(task)` runs right before a call and may skip it without
@@ -89,7 +91,7 @@ export function isRateLimitError(err) {
  * @param {number} [options.maxQueue]
  * @param {() => number} [options.externalPauseUntil] another sender's cooldown (ms timestamp)
  * @param {(pausedUntil: number, strikes: number) => void} [options.onRateLimit]
- * @param {() => void} [options.onBudgetFreed] after a 429 pause ends or the hourly window resets
+ * @param {() => void} [options.onBudgetFreed] after any pause ends (429, shared cooldown, hourly ceiling)
  * @param {(task: PacedTask, err: unknown) => (number | null)} [options.onFailure] retry delay in ms, or null to drop
  */
 export function createPacedQueue({
@@ -115,8 +117,8 @@ export function createPacedQueue({
     let seq = 0;
     let tokens = burst;
     let lastRefillAt = now();
-    let windowStart = 0;
-    let windowCalls = 0;
+    /** Times of the calls in the last hour, oldest first. */
+    const callTimes = [];
     let pausedUntil = 0;
     let strikes = 0;
     let lastRateLimitAt = 0;
@@ -188,16 +190,20 @@ export function createPacedQueue({
         });
     }
 
-    function rollWindow(t) {
-        if (windowStart && t - windowStart < HOUR_MS) {
-            return;
+    /** Drop calls older than an hour; returns how many are left. */
+    function pruneCalls(t) {
+        while (callTimes.length > 0 && t - callTimes[0] >= HOUR_MS) {
+            callTimes.shift();
         }
-        const wasCapped = windowCalls >= hourlyCeiling;
-        windowStart = t;
-        windowCalls = 0;
-        if (wasCapped) {
-            onBudgetFreed();
+        return callTimes.length;
+    }
+
+    /** When the next call fits under the hourly ceiling (0 = now). */
+    function ceilingFreeAt(t) {
+        if (pruneCalls(t) < hourlyCeiling) {
+            return 0;
         }
+        return callTimes[callTimes.length - hourlyCeiling] + HOUR_MS;
     }
 
     function refill(t) {
@@ -234,12 +240,10 @@ export function createPacedQueue({
             until = external;
             reason = 'shared_cooldown';
         }
-        if (windowCalls >= hourlyCeiling) {
-            const windowEnd = windowStart + HOUR_MS;
-            if (windowEnd > until) {
-                until = windowEnd;
-                reason = 'hourly_ceiling';
-            }
+        const freeAt = ceilingFreeAt(t);
+        if (freeAt > until) {
+            until = freeAt;
+            reason = 'hourly_ceiling';
         }
         return { until, reason };
     }
@@ -262,9 +266,14 @@ export function createPacedQueue({
 
     function applyRateLimit() {
         const t = now();
-        strikes++;
         lastRateLimitAt = t;
         counters.rateLimited++;
+        if (pausedUntil > t) {
+            // Already backing off: the same limit seen again (e.g. by VRCX
+            // core while lookups were paused, or reported twice).
+            return;
+        }
+        strikes++;
         pausedUntil = Math.max(
             pausedUntil,
             t + computeBackoffMs(strikes, backoffBaseMs, backoffMaxMs)
@@ -287,7 +296,7 @@ export function createPacedQueue({
         try {
             while (tasks.size > 0 && isActive()) {
                 const t = now();
-                rollWindow(t);
+                pruneCalls(t);
                 const pause = currentPause(t);
                 if (pause.until > t) {
                     wasPaused = true;
@@ -325,7 +334,7 @@ export function createPacedQueue({
                     continue;
                 }
                 tokens -= 1;
-                windowCalls++;
+                callTimes.push(now());
                 counters.calls++;
                 inFlight = task;
                 try {
@@ -532,8 +541,7 @@ export function createPacedQueue({
         for (const task of tasks.values()) {
             byPriority[PRIORITY_NAMES[task.priority] ?? 'backlog']++;
         }
-        const windowActive = windowStart && t - windowStart < HOUR_MS;
-        const callsThisHour = windowActive ? windowCalls : 0;
+        const callsThisHour = pruneCalls(t);
         const pause = currentPause(t);
         let bucket = tokens;
         if (t > lastRefillAt) {
@@ -550,8 +558,9 @@ export function createPacedQueue({
             hourlyCeiling,
             callsThisHour,
             remainingThisHour: Math.max(0, hourlyCeiling - callsThisHour),
-            windowResetsInSec: windowActive
-                ? Math.ceil((windowStart + HOUR_MS - t) / 1000)
+            // Sliding hour: when the oldest counted call stops counting.
+            windowResetsInSec: callsThisHour
+                ? Math.ceil((callTimes[0] + HOUR_MS - t) / 1000)
                 : 0,
             paused: pause.until > t,
             pauseReason: pause.until > t ? pause.reason : '',

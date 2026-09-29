@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => ({
     notifications: [],
     notificationState: { isNotificationsLoading: false },
     groupInvite: { rateLimitCooldownUntil: 0 },
-    lastLocation: null
+    lastLocation: null,
+    rateLimitListeners: new Set()
 }));
 
 vi.mock('../../services/config', () => ({
@@ -38,6 +39,18 @@ vi.mock('../../services/config', () => ({
     }
 }));
 vi.mock('../../services/watchState', () => ({ watchState: mocks.watchState }));
+// Fresh listener registry per test (every test builds a new store).
+vi.mock('../../services/vrchatRateLimit', () => ({
+    onVrchatRateLimit: (listener) => {
+        mocks.rateLimitListeners.add(listener);
+        return () => mocks.rateLimitListeners.delete(listener);
+    },
+    notifyVrchatRateLimit: (endpoint) => {
+        for (const listener of mocks.rateLimitListeners) {
+            listener(endpoint);
+        }
+    }
+}));
 vi.mock('../../services/database', () => ({
     database: { addFriendLogHistory: vi.fn() }
 }));
@@ -61,7 +74,7 @@ vi.mock('../../api', () => ({
         acceptFriendRequestNotification:
             mocks.api.acceptFriendRequestNotification
     },
-    queryRequest: { fetch: vi.fn() },
+    groupRequest: { getRepresentedGroup: vi.fn() },
     userRequest: { getUser: mocks.api.getUser }
 }));
 vi.mock('../../coordinators/friendRelationshipCoordinator', () => ({
@@ -103,6 +116,7 @@ vi.mock('../location', () => ({
 vi.mock('../gameLog', () => ({ useGameLogStore: () => ({ state: {} }) }));
 
 import { useAiriIntegrationStore } from '../airiIntegration';
+import { notifyVrchatRateLimit } from '../../services/vrchatRateLimit';
 
 const ME = 'usr_99999999-9999-4999-8999-999999999999';
 const USER_A = 'usr_0f1e2d3c-4b5a-4968-8776-655443322110';
@@ -139,6 +153,7 @@ beforeEach(() => {
     mocks.notificationState.isNotificationsLoading = false;
     mocks.groupInvite.rateLimitCooldownUntil = 0;
     mocks.lastLocation = null;
+    mocks.rateLimitListeners.clear();
     vi.clearAllMocks();
     mocks.api.getFriendStatus.mockImplementation(() =>
         status({
@@ -225,14 +240,17 @@ describe('AIRI actions', () => {
             status: 200
         });
         // Saved shortly after (debounced).
-        await vi.waitFor(() => {
-            expect(
-                JSON.parse(
-                    mocks.config.get('PAW_airiIntegration_actionHistory') ??
-                        '[]'
-                )
-            ).toHaveLength(1);
-        }, { timeout: 3000 });
+        await vi.waitFor(
+            () => {
+                expect(
+                    JSON.parse(
+                        mocks.config.get('PAW_airiIntegration_actionHistory') ??
+                            '[]'
+                    )
+                ).toHaveLength(1);
+            },
+            { timeout: 3000 }
+        );
 
         const second = await call(store, 'friend-request');
         expect(second.status).toBe(429);
@@ -439,7 +457,8 @@ describe('AIRI actions', () => {
         const store = await makeStore();
         const ids = Array.from(
             { length: 60 },
-            (_, i) => `usr_00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+            (_, i) =>
+                `usr_00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
         );
         ids.forEach((id, i) =>
             mocks.notifications.push({
@@ -575,6 +594,51 @@ describe('AIRI actions: budgets and VRChat rate limits', () => {
         expect(status.lookups.lastRateLimitAt).toBeGreaterThan(0);
     });
 
+    test('a 429 anywhere in VRCX pauses AIRI too; more 429s while paused do not escalate', async () => {
+        const store = await makeStore();
+        notifyVrchatRateLimit('users/usr_x');
+        notifyVrchatRateLimit('users/usr_y');
+        notifyVrchatRateLimit('users/usr_z');
+        const res = await call(store, 'friend-status');
+        expect(res.status).toBe(429);
+        expect(res.body).toMatchObject({
+            error: 'vrchat_rate_limited',
+            retryAfterSec: 60
+        });
+        expect(mocks.api.getFriendStatus).not.toHaveBeenCalled();
+        expect(mocks.groupInvite.rateLimitCooldownUntil).toBeGreaterThan(
+            Date.now() + 55 * 1000
+        );
+        expect(JSON.parse(store.getStatusJson()).lookups).toMatchObject({
+            pauseReason: 'rate_limited',
+            strikes: 1
+        });
+    });
+
+    test('a 429 elsewhere is ignored while the integration is off', async () => {
+        await makeStore({ enabled: false });
+        notifyVrchatRateLimit('users/usr_x');
+        expect(mocks.groupInvite.rateLimitCooldownUntil).toBe(0);
+    });
+
+    test('friend-requests skips the background refresh while VRChat rate limits', async () => {
+        const store = await makeStore();
+        notifyVrchatRateLimit('users/usr_x');
+        const res = await call(store, 'friend-requests', '');
+        expect(res.status).toBe(200);
+        expect(mocks.refreshNotifications).not.toHaveBeenCalled();
+    });
+
+    test('friend-requests while VRCX reloads with no complete list yet is 503, not "none"', async () => {
+        const store = await makeStore();
+        mocks.notificationState.isNotificationsLoading = true;
+        const res = await call(store, 'friend-requests', '');
+        expect(res.status).toBe(503);
+        expect(res.body).toMatchObject({ ok: false, error: 'loading' });
+        mocks.notificationState.isNotificationsLoading = false;
+        expect((await call(store, 'friend-requests', '')).status).toBe(200);
+    });
+
     test('friend-accept with a loaded notification is one VRChat call (no friend-status)', async () => {
         const store = await makeStore();
         mocks.friendRequestKey = 'not_1';
@@ -673,4 +737,3 @@ describe('AIRI actions: budgets and VRChat rate limits', () => {
         ]);
     });
 });
-

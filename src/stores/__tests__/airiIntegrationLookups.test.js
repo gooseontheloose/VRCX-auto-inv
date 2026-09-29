@@ -44,7 +44,7 @@ vi.mock('../../services/database/airiUserCache', () => ({
 vi.mock('../../api', () => ({
     friendRequest: { getFriendStatus: vi.fn(), sendFriendRequest: vi.fn() },
     notificationRequest: { acceptFriendRequestNotification: vi.fn() },
-    queryRequest: { fetch: mocks.api.fetch },
+    groupRequest: { getRepresentedGroup: mocks.api.fetch },
     userRequest: { getUser: mocks.api.getUser }
 }));
 vi.mock('../../coordinators/friendRelationshipCoordinator', () => ({
@@ -123,7 +123,7 @@ function installApi({ failures = new Map() } = {}) {
             }
         });
     };
-    mocks.api.fetch.mockImplementation((name, { userId }) =>
+    mocks.api.fetch.mockImplementation(({ userId }) =>
         respond('group', userId)
     );
     mocks.api.getUser.mockImplementation(({ userId }) =>

@@ -42,6 +42,8 @@ namespace VRCX;
 ///   200 {"ok":true,"requests":[{"userId","displayName","createdAt","inLobby"}],"pendingTotal":n,
 ///        "stale":b} - incoming pending friend requests from VRCX's notification table,
 ///       answered right away; senders in the instance first, then oldest first, max 50
+///   503 {"error":"loading","retryAfterSec":n} - VRCX is reloading notifications and has no
+///       complete list yet (e.g. right after login); ask again, don't read it as "none"
 ///   200 {"ok":bool,"result":"...","userId":"...","displayName":"..."}
 ///       (friend-status: {"ok":true,"isFriend":b,"outgoingPending":b,"incomingPending":b,...})
 ///   400 invalid_user_id / self_not_allowed, 403 {"enabled":b,"actionsEnabled":false,...},

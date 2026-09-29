@@ -11,6 +11,7 @@ import { getCurrentUser } from '../coordinators/userCoordinator';
 import { AppDebug, isApiLogSuppressed, logWebRequest } from './appConfig.js';
 import { i18n } from '../plugins/i18n';
 import { statusCodes } from '../shared/constants/api.js';
+import { notifyVrchatRateLimit } from './vrchatRateLimit';
 import { watchState } from './watchState';
 
 import webApiService from './webapi.js';
@@ -320,6 +321,9 @@ export function shouldIgnoreError(code, endpoint) {
  * @param {string} [endpoint]
  */
 export function $throw(code, error, endpoint) {
+    if (code === 429) {
+        notifyVrchatRateLimit(endpoint);
+    }
     let message = [];
     if (code > 0) {
         const status = statusCodes[code];

@@ -209,6 +209,42 @@ describe('createPacedQueue', () => {
         expect(onBudgetFreed).toHaveBeenCalled();
     });
 
+    test('hourly ceiling is a sliding hour: a burst starting mid-window cannot double up', async () => {
+        const { queue, calls } = makeQueue({ hourlyCeiling: 5, burst: 10 });
+        queue.enqueue('first');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(35 * 60 * 1000);
+        for (let i = 0; i < 20; i++) {
+            queue.enqueue(`k${i}`);
+        }
+        await vi.advanceTimersByTimeAsync(6 * HOUR);
+        expect(calls).toHaveLength(21);
+        const times = calls.map((c) => c.at);
+        for (const start of times) {
+            const inHour = times.filter((t) => t >= start && t < start + HOUR);
+            expect(inHour.length).toBeLessThanOrEqual(5);
+        }
+        // The slot of the first call frees 60 min after it, not at a reset.
+        expect(times[5] - times[0]).toBeGreaterThanOrEqual(HOUR);
+    });
+
+    test('429s reported while already paused do not escalate the backoff', async () => {
+        const { queue } = makeQueue();
+        queue.reportRateLimit();
+        queue.reportRateLimit();
+        await vi.advanceTimersByTimeAsync(30 * 1000);
+        queue.reportRateLimit();
+        expect(queue.stats()).toMatchObject({
+            strikes: 1,
+            rateLimited: 3,
+            retryAfterSec: 30
+        });
+        await vi.advanceTimersByTimeAsync(31 * 1000);
+        queue.reportRateLimit();
+        expect(queue.stats()).toMatchObject({ strikes: 2, retryAfterSec: 120 });
+    });
+
     test('failures are not cached: retried after the onFailure delay', async () => {
         let fail = true;
         const calls = [];
