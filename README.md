@@ -2,7 +2,7 @@
 
 # PAW Inviter - VRCX
 
-**A modified fork of VRCX with enhanced auto-invite features**
+**A modified fork of VRCX with group auto-invites, a Group Monitor with Discord webhooks, and more**
 
 [![GitHub release](https://img.shields.io/github/release/gooseontheloose/VRCX-auto-inv.svg)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/gooseontheloose/VRCX-auto-inv/total?color=6451f1)](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest)
@@ -10,7 +10,7 @@
 
 | **English** | [Français](./README/README.fr.md) | [日本語](./README/README.jp.md) | [简体中文](./README/README.zh_CN.md) | [Italiano](./README/README.it.md) | [Русский](./README/README.ru_RU.md) | [Español](./README/README.es.md) | [Polski](./README/README.pl.md) | [ภาษาไทย](./README/README.th.md) | [Magyar](./README/README.hu.md)
 
-This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the VRChat assistant/companion application — with added features focused on automated group instance invite management.
+This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the VRChat assistant/companion application — with added features for running VRChat groups: automated invites, audit-log monitoring and Discord webhooks. It stays in sync with upstream VRCX (currently based on VRCX 2026.09.16).
 
 </div>
 
@@ -22,16 +22,40 @@ This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the V
 
 <div align="left">
 
-- **Auto-Invite System** — Automatically invite group members to your instance with configurable speed presets (from 5 minutes down to 20 seconds)
-- **18+ Only Toggle** — Filter invites to age-verified users only
-- **Rate Limiting** — Cooldown increased to 1 hour to avoid rate limits
-- **Self-Contained Build** — No .NET runtime required; just download and run the standalone exe
-- **Auto-Updates** — Set to notify by default; checks this GitHub repo for new releases
-- **Activity Log Shows 250 Entries** — Console log always shows full history (dropdown removed)
+- **Group Invite Toolkit & Auto-Inviter** (Player List page)
+  - Mass invite everyone in your instance to one of your groups: everyone, or 18+ verified players only.
+  - Invite your online (or online + active) friends to your current instance.
+  - The Auto-Inviter sends a group invite to each new player who joins your instance, with a pickup delay and an optional **18+ Only** switch.
+  - Speed presets run from Normal (4s) to Absurd (60s) between invites.
+  - An invite cache means nobody is invited twice, and a blacklist covers people you never want to invite.
+  - Rate-limit protection pauses the Auto-Inviter for a 1 hour cooldown.
+  - An activity log shows the last 250 invites.
+- **Group Monitor** (for groups where you can view the audit log)
+  - **Overview:** kick, ban, warn and vote-to-kick leaderboards, plus your group's top worlds.
+  - **Audit Log:** the full audit log with search and filters, saved locally, with missing days filled in automatically.
+  - **Group Members:** a members-over-time chart, retention and churn, "best time to invite" heatmaps and an invite leaderboard.
+  - **Crash Detection:** spots mass leaves that look like instance crashes.
+- **Discord Webhooks** run in the background from login, whether or not the Group Monitor tab is open.
+  - Scheduled leaderboards: top kickers, bans, warns, inviters, vote-kicks and more.
+  - Crash alerts.
+  - A live feed of audit events: kicks, bans, warnings, joins and leaves, role changes.
+  - One delivery queue with retries, Discord rate-limit handling and no duplicate posts.
+  - Per-webhook status, a Test button and a delivery log.
+- **Username Checker:** check whether VRChat display names are free, from generated names, a dictionary `.txt` file or your own list.
+  - A double-check catches hidden or banned accounts.
+  - An "old visitor" badge marks names held by old, unused accounts.
+  - Results can be exported to CSV.
+- **Debug Logs:** open and search VRChat log files, and save a copy before VRChat deletes them.
+- **AIRI Integration** (opt-in, off by default): a local-only API that lets an AI companion on your PC (AIRI) see who is in your instance.
+  - Bios are shared cleaned. Group lookups are paced.
+  - A second opt-in switch lets AIRI send and accept friend requests, within hourly and daily limits.
+- **Switch Account** menu and a theme button in the sidebar.
+- **Auto-Updates:** updates come from this GitHub repo. By default they download in the background and install the next time you start the app. You can change this under **Settings → System → VRCX Updater**.
+- **Self-Contained Build:** no .NET runtime to install. Use the installer or the portable zip.
 
 </div>
 
-All original VRCX features remain intact. See below for the full feature list.
+All original VRCX features remain intact. See below for the full feature list, and [CHANGELOG.md](./CHANGELOG.md) for what changed in each release.
 
 </div>
 
@@ -39,9 +63,13 @@ All original VRCX features remain intact. See below for the full feature list.
 
 <div align="center">
 
-Download the latest release (`VRCX-2.0-Build-Only-Exe.zip`) from [here](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest), extract it, and run `VRCX.exe` — no installation or .NET runtime required.
+Download the latest release from [here](https://github.com/gooseontheloose/VRCX-auto-inv/releases/latest):
 
-For macOS and Linux check [here](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux) for more info.
+**Installer:** run `PAWInviter_X.Y.Z_Setup.exe`. It sets everything up, and when you upgrade it replaces the old version and relaunches.
+
+**Portable:** extract `PAWInviter_X.Y.Z.zip` anywhere and run `VRCX.exe`. No installation or .NET runtime is required.
+
+Releases are built for Windows only. See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 
 </div>

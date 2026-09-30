@@ -133,6 +133,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         needs: [set_version, build_windows, package]
         steps:
+            - uses: actions/checkout@v6
+              with:
+                  sparse-checkout: release-notes
             - name: Download installer
               uses: actions/download-artifact@v8
               with:
@@ -141,6 +144,31 @@ jobs:
               uses: actions/download-artifact@v8
               with:
                   name: portable-zip
+            - name: Build release notes
+              env:
+                  VERSION: ${{ needs.set_version.outputs.version }}
+              run: |
+                  # Body = release-notes/v<version>.md followed by the install section.
+                  # A notes file that already has its own "### Install" section is used as-is.
+                  NOTES="release-notes/v${VERSION}.md"
+                  INSTALL=$(printf '%s\n' \
+                      '### Install' \
+                      "Download and run **\`PAWInviter_${VERSION}_Setup.exe\`**" \
+                      '' \
+                      'Handles VC++ Redistributable, registry, and Start Menu shortcuts automatically.' \
+                      'Upgrading from a previous version? The installer replaces it silently and relaunches.' \
+                      '' \
+                      '### Portable' \
+                      "Extract **\`PAWInviter_${VERSION}.zip\`** anywhere and run \`VRCX.exe\`.")
+                  if [[ -f "$NOTES" ]] && grep -q '^### Install' "$NOTES"; then
+                      cat "$NOTES" > release-body.md
+                  elif [[ -f "$NOTES" ]]; then
+                      { cat "$NOTES"; printf '\n---\n\n%s\n' "$INSTALL"; } > release-body.md
+                  else
+                      echo "::warning::No ${NOTES} found; publishing the install section only."
+                      printf '## PAW Inviter - VRCX %s\n\n%s\n' "$VERSION" "$INSTALL" > release-body.md
+                  fi
+                  cat release-body.md
             - name: Publish GitHub Release
               uses: softprops/action-gh-release@v2
               with:
@@ -148,17 +176,7 @@ jobs:
                   name: PAW Inviter - VRCX ${{ needs.set_version.outputs.version }}
                   draft: false
                   prerelease: false
-                  body: |
-                      ## PAW Inviter - VRCX ${{ needs.set_version.outputs.version }}
-
-                      ### Install
-                      Download and run **`PAWInviter_${{ needs.set_version.outputs.version }}_Setup.exe`**
-
-                      Handles VC++ Redistributable, registry, and Start Menu shortcuts automatically.
-                      Upgrading from a previous version? The installer replaces it silently and relaunches.
-
-                      ### Portable
-                      Extract **`PAWInviter_${{ needs.set_version.outputs.version }}.zip`** anywhere and run `VRCX.exe`.
+                  body_path: release-body.md
                   files: |
                       PAWInviter_${{ needs.set_version.outputs.version }}_Setup.exe
                       PAWInviter_${{ needs.set_version.outputs.version }}.zip
