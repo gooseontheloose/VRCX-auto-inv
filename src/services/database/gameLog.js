@@ -109,6 +109,55 @@ const gameLog = {
         return gamelogDatabase;
     },
 
+    /**
+     * The newest Location row plus the join/leave rows of that instance since
+     * then, oldest first (rows with an empty location are included too).
+     * Unlike getGamelogDatabase() this is not capped by the table size
+     * setting, so a long, busy session (hundreds of joins and leaves) still
+     * finds the instance VRChat is currently in.
+     *
+     * @returns {Promise<object[]>}
+     */
+    async getGamelogCurrentInstance() {
+        let lastLocation = null;
+        await sqliteService.execute((dbRow) => {
+            lastLocation = {
+                rowId: dbRow[0],
+                created_at: dbRow[1],
+                type: 'Location',
+                location: dbRow[2],
+                worldId: dbRow[3],
+                worldName: dbRow[4],
+                time: dbRow[5],
+                groupName: dbRow[6]
+            };
+        }, `SELECT * FROM gamelog_location ORDER BY id DESC LIMIT 1`);
+        if (!lastLocation) {
+            return [];
+        }
+        const gamelogDatabase = [lastLocation];
+        await sqliteService.execute(
+            (dbRow) => {
+                gamelogDatabase.push({
+                    rowId: dbRow[0],
+                    created_at: dbRow[1],
+                    type: dbRow[2],
+                    displayName: dbRow[3],
+                    location: dbRow[4],
+                    userId: dbRow[5],
+                    time: dbRow[6]
+                });
+            },
+            // '' = joins recorded while VRCX had lost track of the location
+            `SELECT * FROM gamelog_join_leave WHERE location IN (@location, '') AND created_at >= @created_at ORDER BY created_at, id`,
+            {
+                '@location': lastLocation.location,
+                '@created_at': lastLocation.created_at
+            }
+        );
+        return gamelogDatabase;
+    },
+
     addGamelogLocationToDatabase(entry) {
         sqliteService.executeNonQuery(
             `INSERT OR IGNORE INTO gamelog_location (created_at, location, world_id, world_name, time, group_name) VALUES (@created_at, @location, @world_id, @world_name, @time, @group_name)`,

@@ -16,6 +16,7 @@ import { AppDebug, logWebRequest } from '../services/appConfig';
 import { database } from '../services/database';
 import { runLastLocationResetFlow, runUpdateCurrentUserLocationFlow } from './locationCoordinator';
 import { getGroupName } from '../shared/utils';
+import { gameLogClients } from '../shared/utils/gameLogClients';
 import { userRequest } from '../api';
 import { watchState } from '../services/watchState';
 import { toast } from 'vue-sonner';
@@ -60,72 +61,65 @@ export async function tryLoadPlayerList() {
     console.log('Loading player list from game log...');
     let ctx;
     let i;
-    const data = await database.getGamelogDatabase();
-    if (data.length === 0) {
+    // newest Location row + that instance's joins/leaves since, not capped by
+    // the table size setting (a busy lobby pushes the Location row out of it)
+    const data = await database.getGamelogCurrentInstance();
+    if (data.length === 0 || data[0].type !== 'Location') {
         return;
     }
-    let length = 0;
-    for (i = data.length - 1; i > -1; i--) {
+    ctx = data[0];
+    locationStore.setLastLocation({
+        date: Date.parse(ctx.created_at),
+        location: ctx.location,
+        name: ctx.worldName,
+        playerList: new Map(),
+        friendList: new Map()
+    });
+    for (i = 1; i < data.length; i++) {
         ctx = data[i];
-        if (ctx.type === 'Location') {
-            locationStore.setLastLocation({
-                date: Date.parse(ctx.created_at),
-                location: ctx.location,
-                name: ctx.worldName,
-                playerList: new Map(),
-                friendList: new Map()
-            });
-            length = i;
-            break;
+        if (ctx.type === 'OnPlayerJoined') {
+            if (!ctx.userId) {
+                ctx.userId =
+                    findUserByDisplayName(
+                        userStore.cachedUsers,
+                        ctx.displayName,
+                        userStore.cachedUserIdsByDisplayName
+                    )?.id ?? '';
+            }
+            const userMap = {
+                displayName: ctx.displayName,
+                userId: ctx.userId,
+                joinTime: Date.parse(ctx.created_at),
+                lastAvatar: ''
+            };
+            locationStore.lastLocation.playerList.set(ctx.userId, userMap);
+            if (friendStore.friends.has(ctx.userId)) {
+                locationStore.lastLocation.friendList.set(ctx.userId, userMap);
+            }
+        }
+        if (ctx.type === 'OnPlayerLeft') {
+            locationStore.lastLocation.playerList.delete(ctx.userId);
+            locationStore.lastLocation.friendList.delete(ctx.userId);
         }
     }
-    if (length > 0) {
-        for (i = length + 1; i < data.length; i++) {
-            ctx = data[i];
-            if (ctx.type === 'OnPlayerJoined') {
-                if (!ctx.userId) {
-                    ctx.userId =
-                        findUserByDisplayName(
-                            userStore.cachedUsers,
-                            ctx.displayName,
-                            userStore.cachedUserIdsByDisplayName
-                        )?.id ?? '';
-                }
-                const userMap = {
-                    displayName: ctx.displayName,
-                    userId: ctx.userId,
-                    joinTime: Date.parse(ctx.created_at),
-                    lastAvatar: ''
-                };
-                locationStore.lastLocation.playerList.set(ctx.userId, userMap);
-                if (friendStore.friends.has(ctx.userId)) {
-                    locationStore.lastLocation.friendList.set(ctx.userId, userMap);
-                }
+    locationStore.lastLocation.playerList.forEach((ref1) => {
+        if (ref1.userId && typeof ref1.userId === 'string') {
+            if (!userStore.cachedUsers.has(ref1.userId)) {
+                userRequest.getUser({ userId: ref1.userId });
             }
-            if (ctx.type === 'OnPlayerLeft') {
-                locationStore.lastLocation.playerList.delete(ctx.userId);
-                locationStore.lastLocation.friendList.delete(ctx.userId);
+            if (!userStore.cachedProfiles.has(ref1.userId)) {
+                userRequest.getPublicProfile({ userId: ref1.userId });
             }
         }
-        locationStore.lastLocation.playerList.forEach((ref1) => {
-            if (ref1.userId && typeof ref1.userId === 'string') {
-                if (!userStore.cachedUsers.has(ref1.userId)) {
-                    userRequest.getUser({ userId: ref1.userId });
-                }
-                if (!userStore.cachedProfiles.has(ref1.userId)) {
-                    userRequest.getPublicProfile({ userId: ref1.userId });
-                }
-            }
-        });
+    });
 
-        runUpdateCurrentUserLocationFlow();
-        instanceStore.updateCurrentInstanceWorld();
-        vrStore.updateVRLastLocation();
-        instanceStore.getCurrentInstanceUserList();
-        userStore.applyUserDialogLocation();
-        instanceStore.applyWorldDialogInstances();
-        instanceStore.applyGroupDialogInstances();
-    }
+    runUpdateCurrentUserLocationFlow();
+    instanceStore.updateCurrentInstanceWorld();
+    vrStore.updateVRLastLocation();
+    instanceStore.getCurrentInstanceUserList();
+    userStore.applyUserDialogLocation();
+    instanceStore.applyWorldDialogInstances();
+    instanceStore.applyGroupDialogInstances();
 }
 
 /**
@@ -153,6 +147,16 @@ export function addGameLogEntry(gameLog, location) {
 
     let entry = undefined;
     if (advancedSettingsStore.gameLogDisabled) {
+        return;
+    }
+    // Several VRChat clients can run at once (e.g. --profile=1): follow the
+    // logged-in user's own client and ignore the other account's log while
+    // it is running, otherwise its location and join/leave events wipe
+    // and mix the player list.
+    if (gameLogClients.observe(gameLog)) {
+        return;
+    }
+    if (gameLogClients.isFromOtherClient(gameLog, userStore.currentUser?.id)) {
         return;
     }
     let userId = String(gameLog.userId || '');
@@ -458,6 +462,7 @@ export function addGameLogEvent(json) {
 
     const rawLogs = JSON.parse(json);
     const gameLog = gameLogService.parseRawGameLog(rawLogs[1], rawLogs[2], rawLogs.slice(3));
+    gameLog.fileName = rawLogs[0];
     if (
         AppDebug.debugGameLog &&
         gameLog.type !== 'photon-id' &&
@@ -487,8 +492,18 @@ async function updateGameLog(dateTill) {
     await new Promise((resolve) => {
         workerTimers.setTimeout(resolve, 10000);
     });
+    const gameLogs = await gameLogService.getAll();
+    // learn which account wrote each log file (and which clients already
+    // exited) before replaying, since files are read one after another
+    for (const gameLog of gameLogs) {
+        gameLogClients.observe(gameLog);
+    }
+    const currentUserId = useUserStore().currentUser?.id;
     let location = '';
-    for (const gameLog of await gameLogService.getAll()) {
+    for (const gameLog of gameLogs) {
+        if (gameLogClients.isFromOtherClient(gameLog, currentUserId)) {
+            continue;
+        }
         if (gameLog.type === 'location') {
             location = gameLog.location;
         }

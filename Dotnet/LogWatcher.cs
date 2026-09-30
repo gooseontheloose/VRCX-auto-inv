@@ -147,11 +147,13 @@ namespace VRCX
                         m_LogContextMap.Add(fileInfo.Name, logContext);
                     }
 
-                    if (logContext.Length == fileInfo.Length)
-                        continue;
+                    if (logContext.Length != fileInfo.Length)
+                    {
+                        logContext.Length = fileInfo.Length;
+                        ParseLog(fileInfo, logContext);
+                    }
 
-                    logContext.Length = fileInfo.Length;
-                    ParseLog(fileInfo, logContext);
+                    CheckLogClosed(fileInfo, logContext);
                 }
             }
 
@@ -211,6 +213,9 @@ namespace VRCX
                         ))
                     {
                         lineDate = lineDate.ToUniversalTime();
+                        // which account this client is logged in as; needed even for old lines
+                        if (ParseUserAuthenticated(fileInfo, logContext, line))
+                            continue;
                         // check if date is older than last database entry
                         if (DateTime.Compare(lineDate, tillDate) <= 0)
                         {
@@ -280,6 +285,63 @@ namespace VRCX
             {
                 logger.Warn(ex, "Failed to parse log file: {0} {1} {2}", fileInfo.FullName, line, ex.Message);
             }
+        }
+
+        private bool ParseUserAuthenticated(FileInfo fileInfo, LogContext logContext, string line)
+        {
+            // 2026.09.29 21:59:46 Debug      -  User Authenticated: Display Name (usr_11b28b08-009f-43d6-a1ae-267f5049a0b4)
+            // Several VRChat clients can run at once (--profile=N), all writing to this folder.
+            // Tell the frontend which account each log belongs to, so it can follow the logged-in user's own client.
+            const int offset = 34;
+            const string prefix = "User Authenticated: ";
+            if (string.Compare(line, offset, prefix, 0, prefix.Length, StringComparison.Ordinal) != 0)
+                return false;
+
+            var text = line.TrimEnd();
+            var idStart = text.LastIndexOf(" (usr_", StringComparison.Ordinal);
+            if (idStart < offset + prefix.Length || !text.EndsWith(")", StringComparison.Ordinal))
+                return true;
+
+            var userId = CleanId.Replace(text.Substring(idStart + 2, text.Length - idStart - 3), string.Empty);
+            var displayName = text.Substring(offset + prefix.Length, idStart - offset - prefix.Length);
+            logContext.UserId = userId;
+
+            AppendLog(new[]
+            {
+                fileInfo.Name,
+                ConvertLogTimeToISO8601(line),
+                "user-authenticated",
+                userId,
+                displayName
+            });
+
+            return true;
+        }
+
+        private void CheckLogClosed(FileInfo fileInfo, LogContext logContext)
+        {
+            // A running VRChat client keeps its log open for writing, so the file can't be opened with
+            // FileShare.Read (write denied) until that client exits. Only checked for logs with a known account.
+            if (logContext.UserId == null || logContext.Closed)
+                return;
+
+            try
+            {
+                using var stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read, FileShare.Read);
+            }
+            catch (Exception)
+            {
+                // still being written (or unreadable), treat as open
+                return;
+            }
+
+            logContext.Closed = true;
+            AppendLog(new[]
+            {
+                fileInfo.Name,
+                DateTime.UtcNow.ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fff'Z'", CultureInfo.InvariantCulture),
+                "log-closed"
+            });
         }
 
         private void AppendLog(string[] item)
@@ -1430,6 +1492,7 @@ namespace VRCX
         private class LogContext
         {
             public bool AudioDeviceChanged;
+            public bool Closed;
             public string LastAudioDevice;
             public readonly HashSet<string> VideoPlaybackErrors = new(50);
             public long Length;
@@ -1437,6 +1500,7 @@ namespace VRCX
             public long Position;
             public string RecentWorldName;
             public bool ShaderKeywordsLimitReached;
+            public string UserId;
         }
     }
 }

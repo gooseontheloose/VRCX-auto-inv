@@ -77,6 +77,19 @@ namespace VRCX
                 {
                     if (monitoredProcess.Process == null || WinApi.HasProcessExited(monitoredProcess.Process.Id))
                     {
+                        // Several VRChat clients can run at once (--profile=N). If another one is still
+                        // running, keep monitoring that one instead of reporting the game as closed,
+                        // which would reset the current location and player list.
+                        var otherProcess = FindRunningProcess(monitoredProcess.ProcessName, monitoredProcess.Process?.Id);
+                        if (otherProcess != null)
+                        {
+                            var oldId = monitoredProcess.Process?.Id.ToString() ?? "null";
+                            monitoredProcess.Process?.Dispose();
+                            monitoredProcess.ProcessStarted(otherProcess);
+                            logger.Info($"Monitored process {monitoredProcess.ProcessName} (PID: {oldId}) exited, still running as PID {otherProcess.Id}.");
+                            continue;
+                        }
+
                         monitoredProcess.ProcessExited();
                         ProcessExited?.Invoke(monitoredProcess);
                         logger.Info($"Monitored process {monitoredProcess.ProcessName} (PID: {(monitoredProcess.Process?.Id.ToString() ?? "null")}) exited.");
@@ -105,6 +118,23 @@ namespace VRCX
                 ProcessStarted?.Invoke(monitoredProcess);
                 logger.Info($"Monitored process {monitoredProcess.ProcessName} (PID: {process.Id}) started.");
             }
+        }
+
+        private static Process FindRunningProcess(string processName, int? excludeId)
+        {
+            Process found = null;
+            foreach (var process in Process.GetProcessesByName(processName))
+            {
+                if (found == null && process.Id != excludeId && !WinApi.HasProcessExited(process.Id))
+                {
+                    found = process;
+                    continue;
+                }
+
+                process.Dispose();
+            }
+
+            return found;
         }
 
         /// <summary>
