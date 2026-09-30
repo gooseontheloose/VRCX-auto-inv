@@ -82,7 +82,7 @@ export function parseResponse(response) {
 /**
  * @template T
  * @param {string} endpoint
- * @param {RequestInit & { params?: any } & {customMsg?: string}} [options]
+ * @param {RequestInit & { params?: any } & {customMsg?: string, silentErrors?: boolean}} [options]
  * @returns {Promise<T>}
  */
 export function request(endpoint, options) {
@@ -98,14 +98,18 @@ export function request(endpoint, options) {
         throw `API request blocked while logged out: ${endpoint}`;
     }
     let req;
-    const init = buildRequestInit(endpoint, options);
+    // silentErrors: throw as usual but skip the error toast (background work
+    // that reports failures in its own UI, e.g. the Group Monitor service).
+    const { silentErrors, ...requestOptions } = options ?? {};
+    const fail = silentErrors ? $throwSilent : $throw;
+    const init = buildRequestInit(endpoint, requestOptions);
     if (init.method === 'GET') {
         // don't retry recent 404/403
         if (failedGetRequests.has(endpoint)) {
             const lastRun = failedGetRequests.get(endpoint);
             if (lastRun >= Date.now() - 900000) {
                 // 15mins
-                $throw(
+                fail(
                     -1,
                     t('api.error.message.403_404_bailing_request'),
                     endpoint
@@ -126,7 +130,7 @@ export function request(endpoint, options) {
     req = webApiService
         .execute(init)
         .catch((err) => {
-            $throw(0, err, endpoint);
+            fail(0, err, endpoint);
         })
         .then((response) => {
             if (
@@ -156,13 +160,13 @@ export function request(endpoint, options) {
                     title: `403 ${t('api.error.message.login_error')}`
                 });
                 authStore.handleLogoutEvent();
-                $throw(403, parsed.data.error?.message || '', endpoint);
+                fail(403, parsed.data.error?.message || '', endpoint);
             }
             if (parsed.hasApiError) {
                 if (parsed.status === 401) {
                     if (parsed.data.error.message === '"Missing Credentials"') {
                         authStore.handleAutoLogin();
-                        $throw(
+                        fail(
                             401,
                             t('api.error.message.missing_credentials'),
                             endpoint
@@ -175,10 +179,10 @@ export function request(endpoint, options) {
                         if (!authStore.twoFactorAuthDialogVisible) {
                             getCurrentUser();
                         }
-                        $throw(401, t('api.status_code.401'), endpoint);
+                        fail(401, t('api.status_code.401'), endpoint);
                     }
                 }
-                $throw(
+                fail(
                     parsed.data.error.status_code || 0,
                     parsed.data.error.message,
                     endpoint
@@ -187,7 +191,7 @@ export function request(endpoint, options) {
             if (parsed.parseError) {
                 console.error('JSON parse error for', endpoint);
                 if (parsed.status === 200) {
-                    $throw(
+                    fail(
                         0,
                         t('api.error.message.invalid_json_response'),
                         endpoint
@@ -198,11 +202,11 @@ export function request(endpoint, options) {
                     init.url.endsWith('/instances/groups')
                 ) {
                     updateLoopStore.setNextGroupInstanceRefresh(120); // 1min
-                    $throw(429, t('api.status_code.429'), endpoint);
+                    fail(429, t('api.status_code.429'), endpoint);
                 }
                 if (parsed.status === 504 || parsed.status === 502) {
                     // ignore expected API errors
-                    $throw(parsed.status, parsed.data || '', endpoint);
+                    fail(parsed.status, parsed.data || '', endpoint);
                 }
             }
             return parsed;
@@ -228,7 +232,7 @@ export function request(endpoint, options) {
                 status === 404 &&
                 endpoint?.startsWith('avatars/')
             ) {
-                $throw(404, data.error?.message || '', endpoint);
+                fail(404, data.error?.message || '', endpoint);
             }
             if (status === 404 && endpoint.endsWith('/persist/exists')) {
                 return false;
@@ -250,7 +254,7 @@ export function request(endpoint, options) {
                 endpoint.startsWith('users/') &&
                 endpoint.split('/').length - 1 === 1
             ) {
-                $throw(404, data.error?.message || '', endpoint);
+                fail(404, data.error?.message || '', endpoint);
             }
             if (
                 status === 404 &&
@@ -260,15 +264,15 @@ export function request(endpoint, options) {
                 notificationStore.expireNotification(init.inviteId);
             }
             if (data && data.error === Object(data.error)) {
-                $throw(
+                fail(
                     data.error.status_code || status,
                     data.error.message,
                     endpoint
                 );
             } else if (data && typeof data.error === 'string') {
-                $throw(data.status_code || status, data.error, endpoint);
+                fail(data.status_code || status, data.error, endpoint);
             }
-            $throw(status, data, endpoint);
+            fail(status, data, endpoint);
         });
     if (init.method === 'GET') {
         req.finally(() => {
@@ -353,7 +357,7 @@ export function $throw(code, error, endpoint) {
     }
     const text = message.join('\n');
 
-    if (text.length && !ignoreError) {
+    if (text.length && !ignoreError && !silentThrowDepth) {
         toast.error(message[0], {
             description: message.slice(1).join('\n'),
             position: 'bottom-left'
@@ -363,6 +367,24 @@ export function $throw(code, error, endpoint) {
     e.status = code;
     e.endpoint = endpoint;
     throw e;
+}
+
+let silentThrowDepth = 0;
+
+/**
+ * Same as $throw, but without the error toast (for background work that
+ * reports failures in its own UI).
+ * @param {number} code
+ * @param {string|object} [error]
+ * @param {string} [endpoint]
+ */
+export function $throwSilent(code, error, endpoint) {
+    silentThrowDepth++;
+    try {
+        $throw(code, error, endpoint);
+    } finally {
+        silentThrowDepth--;
+    }
 }
 
 /**

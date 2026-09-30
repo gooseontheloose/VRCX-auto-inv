@@ -1373,6 +1373,63 @@
                     }
                 }
             }
+        },
+        "group_monitor": {
+            "background": {
+                "title": "Background monitoring",
+                "description": "Runs from login no matter which tab is open. Every minute it polls watched groups, posts due webhooks and checks for crashes.",
+                "on": "On",
+                "off": "Off",
+                "state": {
+                    "stopped": "Stopped",
+                    "starting": "Starting…",
+                    "waiting": "Waiting for group list",
+                    "running": "Running",
+                    "paused": "Paused"
+                },
+                "last_cycle": "Last check {time}",
+                "never": "never",
+                "viewed_group": "This group",
+                "monitor_group": "Watch audit log",
+                "poll_ok": "Last poll {time} · {count} new",
+                "poll_error": "Last poll failed: {error}",
+                "crash_alerts": "Crash alerts",
+                "crash_threshold": "Min players",
+                "crash_window": "Within (s)",
+                "queue": "Queue: {pending} pending · {dead} failed",
+                "retry_failed": "Retry failed",
+                "clear_failed": "Clear failed",
+                "delivery_log": "Recent deliveries",
+                "no_deliveries": "Nothing sent yet."
+            },
+            "webhook": {
+                "test": "Test",
+                "send_now": "Send now",
+                "test_queued": "Test message queued",
+                "queued": "Queued for sending",
+                "last_success": "Last sent {time}",
+                "last_error": "Last error: {error}",
+                "group": "Group",
+                "events": "Events",
+                "pending": "{n} pending",
+                "dead": "{n} failed",
+                "needs_group": "Pick a group: this webhook was created before webhooks had their own group.",
+                "filter": {
+                    "kick": "Kicks",
+                    "ban": "Bans",
+                    "warn": "Warnings",
+                    "member": "Join / leave",
+                    "role": "Roles"
+                }
+            },
+            "error": {
+                "invalid_url": "That is not a Discord webhook URL (https://discord.com/api/webhooks/…)",
+                "no_group": "Select a group first",
+                "not_logged_in": "Not logged in",
+                "no_crash_webhooks": "No enabled crash-alert webhook for this group. Add one on the Webhooks page.",
+                "not_found": "Webhook not found",
+                "not_a_leaderboard": "Only leaderboard webhooks can be sent manually"
+            }
         }
     },
     "dialog": {

@@ -60,6 +60,10 @@
         SelectValue
     } from '@/components/ui/select';
     import { useGroupMonitorData } from './useGroupMonitorData';
+    import { useI18n } from 'vue-i18n';
+    import { useGroupMonitorStore } from '../../stores/groupMonitor';
+    import { isValidDiscordWebhookUrl } from '../../services/groupMonitor/discord';
+    import { AUDIT_EVENT_CATEGORIES } from '../../services/groupMonitor/payloads';
 
     // ── Shared singleton state from composable ────────────────────────────────
     const {
@@ -107,13 +111,6 @@
         openProfileByName,
         startPolling,
         stopPolling,
-        webhookConfigs,
-        webhookSendingIds,
-        webhookStatus,
-        webhookLastSent,
-        initWebhooks,
-        saveWebhookConfigs,
-        saveWebhookLastSent,
         warnLeaderboard,
         mostWarnedLeaderboard,
         groupAuditPermIds,
@@ -762,10 +759,15 @@
 
     watch([crashThreshold, crashWindowSec], () => renderCrashChart());
 
-    // ── webhook service ───────────────────────────────────────────────────────
-    // webhookConfigs / webhookSendingIds / webhookStatus / webhookLastSent
-    // are module-level singletons from useGroupMonitorData (SQLite-backed).
+    // ── webhooks + background monitoring ─────────────────────────────────────
+    // Sending, schedules, audit polling and crash checks all run in the
+    // groupMonitor store from login onwards. This page is only a UI over it:
+    // opening or closing it never starts, stops or duplicates anything.
+    const monitorStore = useGroupMonitorStore();
+    const { t } = useI18n();
+
     const WEBHOOK_TYPE_LABELS = {
+        'audit-events': 'Audit Events (live)',
         'kick-board': 'Top Kickers',
         'most-kicked': 'Most Kicked',
         'ban-board': 'Top Banners',
@@ -777,229 +779,114 @@
         'warn-board': 'Top Warners',
         'most-warned': 'Most Warned'
     };
+    const EVENT_FILTER_OPTIONS = Object.keys(AUDIT_EVENT_CATEGORIES);
+    const isLeaderboard = (type) => type !== 'crash-alert' && type !== 'audit-events';
+
     const webhookNewUrl = ref('');
     const webhookNewName = ref('');
-    const webhookNewType = ref('kick-board');
+    const webhookNewType = ref('audit-events');
     const webhookNewColor = ref('#5865f2');
     const webhookNewInterval = ref(0);
-    let webhookSchedulerInterval = null;
+    const webhookNewGroupId = ref('');
+    const webhookNewFilter = ref(['kick', 'ban', 'warn']);
+    const webhookNewUrlValid = computed(() => isValidDiscordWebhookUrl(webhookNewUrl.value));
+    const webhookBusy = ref(new Set());
 
-    const monitoredGroupId = ref(localStorage.getItem('gm-monitored-group') ?? '');
-    const monitorCrashEnabled = ref(localStorage.getItem('gm-monitor-crash') === '1');
-    let crashMonitorInterval = null;
+    const webhookConfigs = computed(() => monitorStore.webhooks);
+    const viewedGroupSettings = computed(() => monitorStore.getGroupSettings(selectedGroupId.value));
+    const viewedPollStatus = computed(() => monitorStore.pollStatus[selectedGroupId.value] ?? null);
+    const showDeliveryLog = ref(false);
 
-    function setMonitoredGroup(groupId) {
-        monitoredGroupId.value = groupId;
-        localStorage.setItem('gm-monitored-group', groupId);
+    function fmtTime(ms) {
+        return ms ? dayjs(ms).format('YYYY-MM-DD HH:mm:ss') : t('view.group_monitor.background.never');
     }
 
-    function toggleCrashMonitor(enabled) {
-        monitorCrashEnabled.value = enabled;
-        localStorage.setItem('gm-monitor-crash', enabled ? '1' : '0');
-        if (enabled) startCrashMonitor();
-        else stopCrashMonitor();
+    function groupLabel(wh) {
+        return allGroups.value.find((g) => g.id === wh.groupId)?.name ?? wh.groupName ?? wh.groupId;
     }
 
-    async function backgroundCrashCheck() {
-        const groupId = monitoredGroupId.value || selectedGroupId.value;
-        if (!groupId || !monitorCrashEnabled.value) return;
-        try {
-            const rows = [];
-            await sqliteService.execute(
-                (row) => rows.push({ at: row[0], displayName: row[1], location: row[2] }),
-                `SELECT created_at, display_name, location FROM gamelog_join_leave WHERE type = 'OnPlayerLeft' AND location LIKE '%${groupId}%' AND created_at >= datetime('now', '-10 minutes') ORDER BY created_at DESC`
-            );
-            if (!rows.length) return;
-            const windowMs = crashThreshold.value * 1000;
-            const thr = crashThreshold.value;
-            const startMs = new Date(rows[0].at).getTime();
-            const windowEvs = rows.filter((r) => startMs - new Date(r.at).getTime() <= windowMs);
-            if (windowEvs.length >= thr) {
-                const session = {
-                    startAt: rows[0].at, endAt: rows[windowEvs.length - 1].at,
-                    count: windowEvs.length, windowSeconds: crashWindowSec.value,
-                    severity: windowEvs.length >= thr * 3 ? 'high' : windowEvs.length >= thr * 1.5 ? 'medium' : 'low',
-                    location: rows[0].location ?? '',
-                    players: windowEvs.map((e) => e.displayName).filter(Boolean)
-                };
-                await sendCrashToAllWebhooks(session);
-            }
-        } catch { /* silent — background check is non-fatal */ }
+    function webhookName(id) {
+        return monitorStore.webhooks.find((w) => w.id === id)?.name ?? id;
     }
 
-    function startCrashMonitor() {
-        stopCrashMonitor();
-        crashMonitorInterval = setInterval(backgroundCrashCheck, 60_000);
+    function errorText(code, fallback) {
+        const key = `view.group_monitor.error.${code}`;
+        const msg = t(key);
+        return msg === key ? fallback ?? code : msg;
     }
 
-    function stopCrashMonitor() {
-        if (crashMonitorInterval) { clearInterval(crashMonitorInterval); crashMonitorInterval = null; }
-    }
-
-    async function webhookScheduler() {
-        const now = Date.now();
-        for (const wh of webhookConfigs.value) {
-            if (!wh.enabled || !wh.intervalMinutes || wh.type === 'crash-alert') continue;
-            const last = webhookLastSent.value[wh.id] ?? 0;
-            if (now - last < wh.intervalMinutes * 60_000) continue;
-            const fn = getPayloadFn(wh.type, wh.id);
-            if (!fn) continue;
-            webhookLastSent.value = { ...webhookLastSent.value, [wh.id]: now };
-            saveWebhookLastSent();
-            await sendWebhook(wh.id, fn).catch(() => { });
-        }
-    }
-
-    function startWebhookScheduler() {
-        stopWebhookScheduler();
-        webhookSchedulerInterval = setInterval(webhookScheduler, 60_000);
-    }
-
-    function stopWebhookScheduler() {
-        if (webhookSchedulerInterval) { clearInterval(webhookSchedulerInterval); webhookSchedulerInterval = null; }
-    }
-
-    function addWebhook() {
-        const url = webhookNewUrl.value.trim();
-        if (!url) return;
-        const id = `wh-${Date.now()}`;
-        const name = webhookNewName.value.trim() || WEBHOOK_TYPE_LABELS[webhookNewType.value] || 'Webhook';
-        webhookConfigs.value = [...webhookConfigs.value, {
-            id, name, url, type: webhookNewType.value,
+    async function addWebhook() {
+        const res = await monitorStore.addWebhook({
+            name: webhookNewName.value.trim() || WEBHOOK_TYPE_LABELS[webhookNewType.value] || 'Webhook',
+            url: webhookNewUrl.value.trim(),
+            type: webhookNewType.value,
             color: webhookNewColor.value || '#5865f2',
-            enabled: true, intervalMinutes: Number(webhookNewInterval.value) || 0
-        }];
-        saveWebhookConfigs();
+            intervalMinutes: isLeaderboard(webhookNewType.value) ? Number(webhookNewInterval.value) || 0 : 0,
+            groupId: webhookNewGroupId.value || selectedGroupId.value,
+            eventFilter: [...webhookNewFilter.value]
+        });
+        if (!res.ok) {
+            toast.error(errorText(res.error));
+            return;
+        }
         webhookNewUrl.value = '';
         webhookNewName.value = '';
         webhookNewInterval.value = 0;
     }
 
-    function updateWebhookInterval(id, minutes) {
-        webhookConfigs.value = webhookConfigs.value.map((w) =>
-            w.id === id ? { ...w, intervalMinutes: Number(minutes) || 0 } : w
-        );
-        saveWebhookConfigs();
+    function toggleNewFilter(cat) {
+        const s = new Set(webhookNewFilter.value);
+        if (s.has(cat)) s.delete(cat);
+        else s.add(cat);
+        webhookNewFilter.value = [...s];
     }
 
-    function updateWebhookColor(id, color) {
-        webhookConfigs.value = webhookConfigs.value.map((w) =>
-            w.id === id ? { ...w, color } : w
-        );
-        saveWebhookConfigs();
+    function updateWebhook(id, patch) {
+        monitorStore.updateWebhook(id, patch).then((res) => {
+            if (!res.ok) toast.error(errorText(res.error));
+        });
+    }
+
+    function toggleWebhookFilter(wh, cat) {
+        const s = new Set(wh.eventFilter ?? []);
+        if (s.has(cat)) s.delete(cat);
+        else s.add(cat);
+        if (!s.size) return;
+        updateWebhook(wh.id, { eventFilter: [...s] });
     }
 
     function removeWebhook(id) {
-        webhookConfigs.value = webhookConfigs.value.filter((w) => w.id !== id);
-        saveWebhookConfigs();
-        const s = { ...webhookStatus.value };
-        delete s[id];
-        webhookStatus.value = s;
+        monitorStore.removeWebhook(id);
     }
 
-    function toggleWebhook(id) {
-        webhookConfigs.value = webhookConfigs.value.map((w) => w.id === id ? { ...w, enabled: !w.enabled } : w);
-        saveWebhookConfigs();
-    }
-
-    async function doFetchWebhook(url, payload) {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    }
-
-    function hexToDiscordColor(hex) {
-        return parseInt((hex ?? '#5865f2').replace('#', ''), 16);
-    }
-
-    function buildLeaderboardPayload(type, configId) {
-        const config = webhookConfigs.value.find((w) => w.id === configId);
-        const color = hexToDiscordColor(config?.color);
-        const groupName = selectedGroup.value?.name ?? 'Unknown Group';
-        let title, subtitle, rows, nameFn, countFn;
-        if (type === 'kick-board') {
-            title = 'Top Kickers'; subtitle = 'Who has issued the most instance kicks. Players are temporarily removed from the instance for 1 hour but remain in the group.';
-            rows = kickLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
-        } else if (type === 'most-kicked') {
-            title = 'Most Kicked'; subtitle = 'Who has been instance kicked the most. These players were removed from instances the most times.';
-            rows = kickedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
-        } else if (type === 'snitch-report') {
-            title = 'Top Snitches'; subtitle = 'Who has started the most vote-kicks against other players in group instances.';
-            rows = vkSnitchLeaderboard.value; nameFn = (r) => r.name; countFn = (r) => r.initiated;
-        } else if (type === 'vk-targets') {
-            title = 'Most Vote-Kicked'; subtitle = 'Who has had the most vote-kicks initiated against them. These are the most targeted players.';
-            rows = vkTargetLeaderboard.value; nameFn = (r) => r.name; countFn = (r) => r.initiated;
-        } else if (type === 'ban-board') {
-            title = 'Top Banners'; subtitle = 'Who has issued the most group bans. These moderators have removed the most members from the group permanently.';
-            rows = banLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
-        } else if (type === 'most-banned') {
-            title = 'Most Banned'; subtitle = 'Who has been banned from the group the most times. These players have the most ban events on record.';
-            rows = bannedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
-        } else if (type === 'invite-board') {
-            title = 'Top Inviters'; subtitle = 'Who has sent the most group invites and their join conversion rate.';
-            rows = inviteLeaderboard.value;
-            nameFn = (r) => r.actor;
-            countFn = (r) => `${r.invites} invites · ${r.converts} joined · ${r.rate}%`;
-        } else if (type === 'warn-board') {
-            title = 'Top Warners'; subtitle = 'Who has issued the most instance warnings to players.';
-            rows = warnLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
-        } else if (type === 'most-warned') {
-            title = 'Most Warned'; subtitle = 'Who has received the most instance warnings.';
-            rows = mostWarnedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
-        } else { return null; }
-        const lines = rows.slice(0, 25).map((r, i) => `${i + 1}. ${nameFn(r)} — ${countFn(r)}`);
-        const description = `*${subtitle}*\n\n${lines.join('\n') || 'No data yet.'}`;
-        return { embeds: [{ title: `${title} — ${groupName}`, description,
-            color, footer: { text: 'PAW Inviter - VRCX' }, timestamp: new Date().toISOString() }] };
-    }
-
-    function buildCrashAlertPayload(session) {
-        const groupName = selectedGroup.value?.name ?? (monitoredGroupId.value ? `Group ${monitoredGroupId.value.slice(-6)}` : 'Unknown Group');
-        const color = session.severity === 'high' ? 0xe74c3c : session.severity === 'medium' ? 0xf39c12 : 0x3498db;
-        return { embeds: [{ title: `⚠️ Instance Crash Detected — ${groupName}`, description: `${session.count} players left in ${session.windowSeconds}s`, color, fields: [
-            { name: 'Time', value: fmtDate(session.startAt), inline: true },
-            { name: 'Count', value: String(session.count), inline: true },
-            { name: 'Severity', value: session.severity.toUpperCase(), inline: true },
-            { name: 'Players', value: session.players.slice(0, 20).join(', ') || 'Unknown', inline: false }
-        ], footer: { text: 'PAW Inviter - VRCX' }, timestamp: new Date().toISOString() }] };
-    }
-
-    async function sendWebhook(configId, payloadOrFn) {
-        const config = webhookConfigs.value.find((w) => w.id === configId);
-        if (!config?.url) return;
-        webhookSendingIds.value = new Set([...webhookSendingIds.value, configId]);
+    async function runBusy(id, fn) {
+        webhookBusy.value = new Set([...webhookBusy.value, id]);
         try {
-            const payload = typeof payloadOrFn === 'function' ? payloadOrFn() : payloadOrFn;
-            await doFetchWebhook(config.url, payload);
-            webhookStatus.value = { ...webhookStatus.value, [configId]: { ok: true, msg: 'Sent ✓' } };
-            toast.success(`Sent to "${config.name}"`);
-        } catch (err) {
-            const msg = err?.message ?? 'Failed';
-            webhookStatus.value = { ...webhookStatus.value, [configId]: { ok: false, msg } };
-            toast.error(`Webhook failed: ${msg}`);
+            return await fn();
         } finally {
-            webhookSendingIds.value = new Set([...webhookSendingIds.value].filter((id) => id !== configId));
+            webhookBusy.value = new Set([...webhookBusy.value].filter((x) => x !== id));
         }
     }
 
-    function getPayloadFn(type, configId) {
-        const leaderboardTypes = ['kick-board', 'most-kicked', 'ban-board', 'most-banned', 'snitch-report', 'vk-targets', 'invite-board', 'warn-board', 'most-warned'];
-        if (leaderboardTypes.includes(type)) return () => buildLeaderboardPayload(type, configId);
-        return null;
+    async function testWebhook(id) {
+        const res = await runBusy(id, () => monitorStore.testWebhook(id));
+        if (res?.ok) toast.success(t('view.group_monitor.webhook.test_queued'));
+        else toast.error(errorText(res?.error, 'Failed'));
     }
 
-    async function sendCrashToAllWebhooks(session) {
-        const targets = webhookConfigs.value.filter((w) => w.enabled && w.type === 'crash-alert');
-        if (!targets.length) { toast.warning('No crash-alert webhooks configured. Add one in the Webhook tab.'); return; }
-        await Promise.all(targets.map((w) => sendWebhook(w.id, buildCrashAlertPayload(session))));
+    async function sendNow(id) {
+        const res = await runBusy(id, () => monitorStore.sendNow(id));
+        if (res?.ok) toast.success(t('view.group_monitor.webhook.queued'));
+        else toast.error(errorText(res?.error, 'Failed'));
+    }
+
+    function setViewedGroupSetting(patch) {
+        if (!selectedGroupId.value) return;
+        monitorStore.setGroupSettings(selectedGroupId.value, patch);
     }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
     onMounted(async () => {
-        await initWebhooks();
         loadVoteKickHistory();
         window.addEventListener('resize', onResize);
         const _savedGroupId = localStorage.getItem('gm-group-id');
@@ -1007,14 +894,10 @@
         // Only fetch if data isn't already loaded from another GroupMonitor page this session
         if (_startGroupId && _startGroupId !== selectedGroupId.value) handleGroupChange(_startGroupId);
         startPolling();
-        if (monitorCrashEnabled.value) startCrashMonitor();
-        startWebhookScheduler();
     });
 
     onBeforeUnmount(() => {
         stopPolling();
-        stopCrashMonitor();
-        stopWebhookScheduler();
         window.removeEventListener('resize', onResize);
         crashChart?.dispose();
         membersChart?.dispose();
@@ -1107,10 +990,112 @@
 
             <!-- ── Webhooks ── -->
             <div class="space-y-4">
+                    <!-- background service status + settings -->
+                    <div class="rounded-lg border bg-card px-4 py-3 space-y-3">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <Activity class="size-4 text-primary" />
+                            <p class="text-sm font-medium">{{ t('view.group_monitor.background.title') }}</p>
+                            <Badge
+                                :variant="monitorStore.serviceState === 'running' ? 'default' : 'outline'"
+                                class="text-xs"
+                                data-testid="gm-service-state">
+                                {{ t(`view.group_monitor.background.state.${monitorStore.serviceState}`) }}
+                            </Badge>
+                            <span class="text-xs text-muted-foreground">
+                                {{ t('view.group_monitor.background.last_cycle', { time: fmtTime(monitorStore.lastCycleAt) }) }}
+                            </span>
+                            <button
+                                class="ml-auto flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border transition-colors"
+                                :class="monitorStore.enabled ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+                                @click="monitorStore.setEnabled(!monitorStore.enabled)">
+                                <Zap class="size-3" />
+                                {{ monitorStore.enabled ? t('view.group_monitor.background.on') : t('view.group_monitor.background.off') }}
+                            </button>
+                        </div>
+                        <p class="text-xs text-muted-foreground">{{ t('view.group_monitor.background.description') }}</p>
+
+                        <!-- viewed group settings -->
+                        <div class="flex items-center gap-3 flex-wrap text-xs border-t pt-3">
+                            <span class="font-medium">{{ t('view.group_monitor.background.viewed_group') }}: {{ selectedGroup?.name ?? selectedGroupId }}</span>
+                            <label class="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    :checked="viewedGroupSettings.monitored"
+                                    @change="setViewedGroupSetting({ monitored: $event.target.checked })" />
+                                {{ t('view.group_monitor.background.monitor_group') }}
+                            </label>
+                            <label class="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    :checked="viewedGroupSettings.crashEnabled"
+                                    @change="setViewedGroupSetting({ crashEnabled: $event.target.checked })" />
+                                {{ t('view.group_monitor.background.crash_alerts') }}
+                            </label>
+                            <span class="flex items-center gap-1">
+                                {{ t('view.group_monitor.background.crash_threshold') }}
+                                <input
+                                    type="number" min="2" max="50"
+                                    :value="viewedGroupSettings.crashThreshold"
+                                    @change="setViewedGroupSetting({ crashThreshold: Number($event.target.value) })"
+                                    class="w-14 h-6 rounded border bg-background px-1 text-xs text-center tabular-nums" />
+                            </span>
+                            <span class="flex items-center gap-1">
+                                {{ t('view.group_monitor.background.crash_window') }}
+                                <input
+                                    type="number" min="10" max="600"
+                                    :value="viewedGroupSettings.crashWindowSec"
+                                    @change="setViewedGroupSetting({ crashWindowSec: Number($event.target.value) })"
+                                    class="w-16 h-6 rounded border bg-background px-1 text-xs text-center tabular-nums" />
+                            </span>
+                            <span v-if="viewedPollStatus" class="w-full"
+                                :class="viewedPollStatus.ok ? 'text-muted-foreground' : 'text-destructive'">
+                                <template v-if="viewedPollStatus.ok">
+                                    {{ t('view.group_monitor.background.poll_ok', { time: fmtTime(viewedPollStatus.at), count: viewedPollStatus.newCount }) }}
+                                </template>
+                                <template v-else>
+                                    {{ t('view.group_monitor.background.poll_error', { error: viewedPollStatus.error }) }}
+                                </template>
+                            </span>
+                        </div>
+
+                        <!-- queue -->
+                        <div class="flex items-center gap-2 flex-wrap text-xs border-t pt-3">
+                            <span class="text-muted-foreground" data-testid="gm-queue">
+                                {{ t('view.group_monitor.background.queue', { pending: monitorStore.queueStats.pending, dead: monitorStore.queueStats.dead }) }}
+                            </span>
+                            <template v-if="monitorStore.queueStats.dead > 0">
+                                <Button variant="outline" size="sm" class="h-6 text-xs" @click="monitorStore.retryDead()">
+                                    {{ t('view.group_monitor.background.retry_failed') }}
+                                </Button>
+                                <Button variant="ghost" size="sm" class="h-6 text-xs" @click="monitorStore.clearDead()">
+                                    {{ t('view.group_monitor.background.clear_failed') }}
+                                </Button>
+                            </template>
+                            <button class="ml-auto flex items-center gap-1 text-muted-foreground hover:text-foreground" @click="showDeliveryLog = !showDeliveryLog">
+                                <ChevronDown v-if="showDeliveryLog" class="size-3" />
+                                <ChevronRight v-else class="size-3" />
+                                {{ t('view.group_monitor.background.delivery_log') }}
+                            </button>
+                        </div>
+                        <div v-if="showDeliveryLog" class="text-xs space-y-0.5 max-h-48 overflow-y-auto">
+                            <p v-if="!monitorStore.deliveryLog.length" class="text-muted-foreground">{{ t('view.group_monitor.background.no_deliveries') }}</p>
+                            <div v-for="(e, i) in monitorStore.deliveryLog" :key="i" class="flex items-center gap-2">
+                                <CheckCircle2 v-if="e.status === 'sent'" class="size-3 text-green-500 shrink-0" />
+                                <XCircle v-else class="size-3 text-destructive shrink-0" />
+                                <span class="tabular-nums text-muted-foreground">{{ fmtTime(e.at) }}</span>
+                                <span class="font-medium">{{ webhookName(e.webhookId) }}</span>
+                                <span class="text-muted-foreground truncate">{{ e.eventId }}</span>
+                                <span v-if="e.status !== 'sent'" class="text-destructive truncate">
+                                    {{ e.status }}{{ e.httpStatus ? ` (${e.httpStatus})` : '' }} {{ e.message }}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="flex items-center justify-between">
                         <div>
                             <p class="text-sm font-medium">Discord Webhook Notifications</p>
-                            <p class="text-xs text-muted-foreground">Send analytics reports to Discord. Analytics-only — no moderation actions.</p>
+                            <p class="text-xs text-muted-foreground">Live audit events, scheduled leaderboards and crash alerts. Analytics-only — no moderation actions.</p>
                         </div>
                         <Badge variant="secondary" class="text-xs">{{ webhookConfigs.filter(w => w.enabled).length }} active</Badge>
                     </div>
@@ -1120,12 +1105,22 @@
                         <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Add Webhook</p>
                         <div class="flex gap-2 flex-wrap">
                             <Input v-model="webhookNewName" placeholder="Label…" class="w-36 h-8 text-sm" />
-                            <Input v-model="webhookNewUrl" placeholder="https://discord.com/api/webhooks/…" class="flex-1 min-w-48 h-8 text-sm" />
+                            <Input v-model="webhookNewUrl" placeholder="https://discord.com/api/webhooks/…" class="flex-1 min-w-48 h-8 text-sm"
+                                :class="webhookNewUrl.trim() && !webhookNewUrlValid ? 'border-destructive' : ''" />
                         </div>
+                        <p v-if="webhookNewUrl.trim() && !webhookNewUrlValid" class="text-xs text-destructive">{{ t('view.group_monitor.error.invalid_url') }}</p>
                         <div class="flex gap-2 flex-wrap items-center">
+                            <Select :model-value="webhookNewGroupId || selectedGroupId" @update:model-value="(v) => (webhookNewGroupId = v)">
+                                <SelectTrigger class="w-52 h-8 text-sm"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</SelectItem>
+                                </SelectContent>
+                            </Select>
                             <Select v-model="webhookNewType">
                                 <SelectTrigger class="w-48 h-8 text-sm"><SelectValue /></SelectTrigger>
                                 <SelectContent>
+                                    <SelectItem value="audit-events">Audit Events (live)</SelectItem>
+                                    <SelectItem value="crash-alert">Crash Alerts</SelectItem>
                                     <SelectItem value="kick-board">Top Kickers</SelectItem>
                                     <SelectItem value="most-kicked">Most Kicked</SelectItem>
                                     <SelectItem value="ban-board">Top Banners</SelectItem>
@@ -1135,7 +1130,6 @@
                                     <SelectItem value="snitch-report">Top Snitches</SelectItem>
                                     <SelectItem value="vk-targets">Most Vote-Kicked</SelectItem>
                                     <SelectItem value="invite-board">Top Inviters</SelectItem>
-                                    <SelectItem value="crash-alert">Crash Alerts</SelectItem>
                                 </SelectContent>
                             </Select>
                             <div class="flex items-center gap-1.5">
@@ -1145,7 +1139,7 @@
                                     @input="webhookNewColor = $event.target.value"
                                     class="w-8 h-8 rounded border bg-background cursor-pointer p-0.5" />
                             </div>
-                            <div class="flex items-center gap-1.5">
+                            <div v-if="isLeaderboard(webhookNewType)" class="flex items-center gap-1.5">
                                 <span class="text-xs text-muted-foreground whitespace-nowrap">Auto-send every</span>
                                 <input
                                     type="number" min="0" max="10080" :value="webhookNewInterval"
@@ -1153,9 +1147,18 @@
                                     class="w-16 h-8 rounded border bg-background px-2 text-sm text-center tabular-nums" />
                                 <span class="text-xs text-muted-foreground">min (0 = manual)</span>
                             </div>
-                            <Button variant="default" size="sm" class="h-8 ml-auto" @click="addWebhook" :disabled="!webhookNewUrl.trim()">
+                            <Button variant="default" size="sm" class="h-8 ml-auto" @click="addWebhook" :disabled="!webhookNewUrlValid">
                                 <Plus class="size-3.5 mr-1" />Add
                             </Button>
+                        </div>
+                        <div v-if="webhookNewType === 'audit-events'" class="flex items-center gap-1.5 flex-wrap">
+                            <span class="text-xs text-muted-foreground">{{ t('view.group_monitor.webhook.events') }}:</span>
+                            <button v-for="cat in EVENT_FILTER_OPTIONS" :key="cat"
+                                class="text-xs px-2 py-0.5 rounded border transition-colors"
+                                :class="webhookNewFilter.includes(cat) ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+                                @click="toggleNewFilter(cat)">
+                                {{ t(`view.group_monitor.webhook.filter.${cat}`) }}
+                            </button>
                         </div>
                     </div>
 
@@ -1172,90 +1175,93 @@
                                 class="shrink-0 transition-colors"
                                 :class="wh.enabled ? 'text-primary' : 'text-muted-foreground'"
                                 :title="wh.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'"
-                                @click="toggleWebhook(wh.id)">
+                                @click="updateWebhook(wh.id, { enabled: !wh.enabled })">
                                 <Bell v-if="wh.enabled" class="size-4" />
                                 <BellOff v-else class="size-4" />
                             </button>
                             <span class="font-medium text-sm">{{ wh.name }}</span>
                             <Badge variant="outline" class="text-xs">{{ WEBHOOK_TYPE_LABELS[wh.type] ?? wh.type }}</Badge>
-                            <span v-if="wh.intervalMinutes > 0" class="text-xs text-muted-foreground">
+                            <span class="text-xs text-muted-foreground">· {{ groupLabel(wh) }}</span>
+                            <span v-if="isLeaderboard(wh.type) && wh.intervalMinutes > 0" class="text-xs text-muted-foreground">
                                 · every {{ wh.intervalMinutes }}m
                             </span>
                             <div class="ml-auto flex items-center gap-2">
-                                <!-- color swatch for non-crash webhooks -->
-                                <div v-if="wh.type !== 'crash-alert'" class="flex items-center gap-1" title="Embed color">
+                                <div class="flex items-center gap-1" title="Embed color">
                                     <input
                                         type="color" :value="wh.color ?? '#5865f2'"
-                                        @input="updateWebhookColor(wh.id, $event.target.value)"
+                                        @change="updateWebhook(wh.id, { color: $event.target.value })"
                                         class="w-6 h-6 rounded border bg-background cursor-pointer p-0.5" />
                                 </div>
-                                <!-- manual send -->
                                 <Button
-                                    v-if="wh.type !== 'crash-alert'"
                                     variant="outline" size="sm" class="h-7 text-xs"
-                                    :disabled="!wh.enabled || webhookSendingIds.has(wh.id)"
-                                    @click="sendWebhook(wh.id, getPayloadFn(wh.type, wh.id))">
-                                    <RefreshCw v-if="webhookSendingIds.has(wh.id)" class="size-3 mr-1 animate-spin" />
-                                    <Send v-else class="size-3 mr-1" />
-                                    Send Now
+                                    :disabled="webhookBusy.has(wh.id)"
+                                    @click="testWebhook(wh.id)">
+                                    <Zap class="size-3 mr-1" />{{ t('view.group_monitor.webhook.test') }}
                                 </Button>
-                                <span v-else class="text-xs text-muted-foreground italic">sent from Crash tab</span>
-                                <!-- delete -->
+                                <Button
+                                    v-if="isLeaderboard(wh.type)"
+                                    variant="outline" size="sm" class="h-7 text-xs"
+                                    :disabled="!wh.enabled || webhookBusy.has(wh.id) || monitorStore.webhookState[wh.id]?.sending"
+                                    @click="sendNow(wh.id)">
+                                    <RefreshCw v-if="webhookBusy.has(wh.id) || monitorStore.webhookState[wh.id]?.sending" class="size-3 mr-1 animate-spin" />
+                                    <Send v-else class="size-3 mr-1" />
+                                    {{ t('view.group_monitor.webhook.send_now') }}
+                                </Button>
                                 <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" @click="removeWebhook(wh.id)">
                                     <Trash2 class="size-3.5" />
                                 </Button>
                             </div>
                         </div>
 
-                        <!-- URL preview + interval editor -->
+                        <!-- group / URL / interval / filter -->
                         <div class="flex items-center gap-3 flex-wrap">
                             <span class="text-xs text-muted-foreground font-mono truncate max-w-sm opacity-60">{{ wh.url }}</span>
-                            <div v-if="wh.type !== 'crash-alert'" class="flex items-center gap-1.5 ml-auto">
+                            <div class="flex items-center gap-1.5">
+                                <span v-if="!wh.groupId" class="text-xs text-destructive">{{ t('view.group_monitor.webhook.needs_group') }}</span>
+                                <Select :model-value="wh.groupId || ''" @update:model-value="(v) => v && v !== wh.groupId && updateWebhook(wh.id, { groupId: v })">
+                                    <SelectTrigger class="w-44 h-6 text-xs"><SelectValue :placeholder="groupLabel(wh) || t('view.group_monitor.webhook.group')" /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem v-for="g in allGroups" :key="g.id" :value="g.id">{{ g.name }}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div v-if="isLeaderboard(wh.type)" class="flex items-center gap-1.5 ml-auto">
                                 <span class="text-xs text-muted-foreground">Auto every</span>
                                 <input
                                     type="number" min="0" max="10080"
                                     :value="wh.intervalMinutes ?? 0"
-                                    @change="updateWebhookInterval(wh.id, $event.target.value)"
+                                    @change="updateWebhook(wh.id, { intervalMinutes: Number($event.target.value) || 0 })"
                                     class="w-16 h-6 rounded border bg-background px-2 text-xs text-center tabular-nums" />
                                 <span class="text-xs text-muted-foreground">min</span>
                             </div>
-                        </div>
-
-                        <!-- status -->
-                        <div v-if="webhookStatus[wh.id]" class="text-xs"
-                            :class="webhookStatus[wh.id].ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'">
-                            {{ webhookStatus[wh.id].msg }}
-                            <span v-if="webhookLastSent[wh.id]" class="ml-2 text-muted-foreground">
-                                · last: {{ fmtDate(new Date(webhookLastSent[wh.id]).toISOString()) }}
-                            </span>
-                        </div>
-                    </div>
-
-                    <!-- passive monitoring section -->
-                    <div class="rounded-lg border bg-card px-4 py-3 space-y-2">
-                        <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
-                            <Activity class="size-3.5" />Background Monitoring
-                        </p>
-                        <div class="flex items-center gap-3 flex-wrap text-sm">
-                            <span class="text-muted-foreground text-xs">Crash alerts monitor this group even while you view other tabs or groups:</span>
-                            <div class="flex items-center gap-2">
-                                <Select :model-value="monitoredGroupId || selectedGroupId"
-                                    @update:model-value="setMonitoredGroup">
-                                    <SelectTrigger class="w-52 h-7 text-xs"><SelectValue placeholder="(same as viewed)" /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="">Same as viewed group</SelectItem>
-                                        <SelectItem v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                                <button
-                                    class="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border transition-colors"
-                                    :class="monitorCrashEnabled ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
-                                    @click="toggleCrashMonitor(!monitorCrashEnabled)">
-                                    <Zap class="size-3" />{{ monitorCrashEnabled ? 'Monitoring Active' : 'Start Monitor' }}
+                            <div v-if="wh.type === 'audit-events'" class="flex items-center gap-1 flex-wrap ml-auto">
+                                <button v-for="cat in EVENT_FILTER_OPTIONS" :key="cat"
+                                    class="text-xs px-2 py-0.5 rounded border transition-colors"
+                                    :class="(wh.eventFilter ?? []).includes(cat) ? 'bg-primary/80 text-primary-foreground border-primary' : 'hover:bg-muted text-muted-foreground'"
+                                    @click="toggleWebhookFilter(wh, cat)">
+                                    {{ t(`view.group_monitor.webhook.filter.${cat}`) }}
                                 </button>
                             </div>
                         </div>
-                        <p class="text-xs text-muted-foreground">Checks every 60s. Fires crash-alert webhooks automatically when a spike is detected.</p>
+
+                        <!-- delivery status -->
+                        <div class="flex items-center gap-3 flex-wrap text-xs">
+                            <span v-if="monitorStore.webhookState[wh.id]?.lastSuccessAt" class="text-green-600 dark:text-green-400">
+                                {{ t('view.group_monitor.webhook.last_success', { time: fmtTime(monitorStore.webhookState[wh.id].lastSuccessAt) }) }}
+                            </span>
+                            <span v-if="monitorStore.webhookState[wh.id]?.lastError" class="text-destructive">
+                                {{ t('view.group_monitor.webhook.last_error', { error: monitorStore.webhookState[wh.id].lastError }) }}
+                            </span>
+                            <span v-if="monitorStore.queueStats.byWebhook[wh.id]?.pending" class="text-muted-foreground">
+                                {{ t('view.group_monitor.webhook.pending', { n: monitorStore.queueStats.byWebhook[wh.id].pending }) }}
+                            </span>
+                            <span v-if="monitorStore.queueStats.byWebhook[wh.id]?.dead" class="text-destructive">
+                                {{ t('view.group_monitor.webhook.dead', { n: monitorStore.queueStats.byWebhook[wh.id].dead }) }}
+                            </span>
+                            <span v-if="isLeaderboard(wh.type) && monitorStore.lastSent[wh.id]" class="text-muted-foreground">
+                                · scheduled last: {{ fmtTime(monitorStore.lastSent[wh.id]) }}
+                            </span>
+                        </div>
                     </div>
             </div>
         </template>
