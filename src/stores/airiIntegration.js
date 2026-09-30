@@ -39,6 +39,8 @@ import {
     handleFriendStatus
 } from '../coordinators/friendRelationshipCoordinator';
 import { airiUserCache } from '../services/database/airiUserCache';
+import { onAiriSocialEvent } from '../services/airiSocialEvents';
+import { createAiriSocial } from './airiIntegrationSocial';
 import { database } from '../services/database';
 import { onVrchatRateLimit } from '../services/vrchatRateLimit';
 import { useFriendStore } from './friend';
@@ -62,7 +64,7 @@ const CONFIG_KEYS = {
 };
 
 /** Entries kept in the "recent AIRI actions" list. */
-const ACTION_LOG_MAX = 25;
+const ACTION_LOG_MAX = 50;
 /** Persisted action history is written at most this often. */
 const ACTION_HISTORY_SAVE_DELAY_MS = 1000;
 
@@ -259,7 +261,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
             configRepository.getBool(CONFIG_KEYS.fetchGroups, false),
             configRepository.getBool(CONFIG_KEYS.actionsEnabled, false),
             configRepository.getString(CONFIG_KEYS.actionHistory, '[]'),
-            configRepository.getString(CONFIG_KEYS.acceptPerHour, '')
+            configRepository.getString(CONFIG_KEYS.acceptPerHour, ''),
+            social.loadSocialSettings()
         ]);
         enabled.value = Boolean(enabledConfig);
         shareBios.value = Boolean(shareBiosConfig);
@@ -609,6 +612,18 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
     });
 
+    // ── Social actions (boops, invites, replies, status, notes) ─
+    const social = createAiriSocial({
+        enabled,
+        userStore,
+        locationStore,
+        gameLogStore,
+        vrchatCooldownSec: () => vrchatCooldownSec(),
+        reportRateLimit: () => lookupQueue.reportRateLimit(),
+        logAction: (...args) => logAction(...args),
+        cachedDisplayName: (userId) => cachedDisplayName(userId)
+    });
+
     function hasGivenUp(key) {
         const at = lookupGaveUp.get(key);
         if (at === undefined) {
@@ -764,7 +779,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
             playerCount,
             acceptPerHour: acceptPerHour.value,
             lookups: getLookupStatus(),
-            friendBudget: getFriendBudget()
+            friendBudget: getFriendBudget(),
+            ...social.getSocialStatus()
         });
     }
 
@@ -1300,6 +1316,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
                 lookupQueue.clear();
                 lookupGaveUp.clear();
                 friendRequestSnapshot = null;
+                social.clearSession();
             }
         },
         { flush: 'sync' }
@@ -1311,9 +1328,14 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         onVrchatRateLimit(() => {
             if (enabled.value) {
                 lookupQueue.reportRateLimit();
+                social.onRateLimit();
             }
         })
     );
+
+    // VRChat websocket messages (boops, invites, friend presence) feed the
+    // social event buffer for GET /paw/events.
+    onScopeDispose(onAiriSocialEvent(social.recordSocketEvent));
 
     // Present players whose lookups were dropped (queue cleared, budget
     // exhausted, or joined while paused) are picked up again.
@@ -1349,6 +1371,18 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         handleActionRequest,
         handlePlayerRequest,
         handlePlayerJoined,
-        enqueueCurrentPlayers
+        enqueueCurrentPlayers,
+        socialEnabled: social.socialEnabled,
+        socialDryRun: social.socialDryRun,
+        socialKinds: social.socialKinds,
+        socialVersion: social.socialVersion,
+        setSocialEnabled: social.setSocialEnabled,
+        setSocialDryRun: social.setSocialDryRun,
+        setSocialKindEnabled: social.setSocialKindEnabled,
+        handleSocialRequest: social.handleSocialRequest,
+        recordSocketEvent: social.recordSocketEvent,
+        recentSocialEvents: social.recentEvents,
+        getSocialBudget: social.getSocialBudget,
+        getSocialPause: social.getSocialPause
     };
 });

@@ -92,10 +92,11 @@ const notificationReq = {
      * @param receiverUserId
      * @returns {Promise<{ json: any; params }>}
      */
-    sendInvite(params, receiverUserId) {
+    sendInvite(params, receiverUserId, options) {
         return request(`invite/${receiverUserId}`, {
             method: 'POST',
-            params
+            params,
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,
@@ -149,10 +150,11 @@ const notificationReq = {
         });
     },
 
-    sendInviteResponse(params, inviteId) {
+    sendInviteResponse(params, inviteId, options) {
         return request(`invite/${inviteId}/response`, {
             method: 'POST',
-            params
+            params,
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,
@@ -197,11 +199,13 @@ const notificationReq = {
 
     /**
      * @param {{ notificationId: string }} params
+     * @param {{ silentErrors?: boolean }} [options]
      * @returns {Promise<{ json: any; params }>}
      */
-    hideNotification(params) {
+    hideNotification(params, options) {
         return request(`auth/user/notifications/${params.notificationId}/hide`, {
-            method: 'PUT'
+            method: 'PUT',
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,

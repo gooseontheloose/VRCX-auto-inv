@@ -147,9 +147,10 @@ const userReq = {
         });
     },
 
-    getMutualCounts(params) {
+    getMutualCounts(params, options) {
         return request(`users/${params.userId}/mutuals`, {
-            method: 'GET'
+            method: 'GET',
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,

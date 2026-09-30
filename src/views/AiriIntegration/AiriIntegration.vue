@@ -201,6 +201,102 @@
             </div>
         </div>
 
+        <!-- Social actions -->
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <div class="border rounded-lg p-4 space-y-3">
+                <h3 class="font-semibold flex items-center gap-2 flex-wrap">
+                    <HeartHandshake class="size-4 text-primary" /> {{ t('view.airi_integration.social_header') }}
+                    <Badge :variant="socialStateVariant" class="ml-1">{{ socialStateText }}</Badge>
+                </h3>
+                <div class="flex items-center justify-between gap-4">
+                    <div class="min-w-0">
+                        <div class="text-sm font-medium">{{ t('view.airi_integration.social_enable') }}</div>
+                        <div class="text-xs text-muted-foreground">
+                            {{ t('view.airi_integration.social_enable_description') }}
+                        </div>
+                        <div v-if="airiStore.socialEnabled && !airiStore.enabled" class="text-xs text-amber-500 mt-1">
+                            {{ t('view.airi_integration.social_needs_integration') }}
+                        </div>
+                    </div>
+                    <Switch :model-value="airiStore.socialEnabled" @update:modelValue="airiStore.setSocialEnabled" />
+                </div>
+                <div class="flex items-center justify-between gap-4">
+                    <div class="min-w-0">
+                        <div class="text-sm font-medium">{{ t('view.airi_integration.social_dry_run') }}</div>
+                        <div class="text-xs text-muted-foreground">
+                            {{ t('view.airi_integration.social_dry_run_description') }}
+                        </div>
+                    </div>
+                    <Switch :model-value="airiStore.socialDryRun" @update:modelValue="airiStore.setSocialDryRun" />
+                </div>
+                <div class="border rounded-lg overflow-auto">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>{{ t('view.airi_integration.social_kind') }}</TableHead>
+                                <TableHead>{{ t('view.airi_integration.social_hour') }}</TableHead>
+                                <TableHead>{{ t('view.airi_integration.social_day') }}</TableHead>
+                                <TableHead>{{ t('view.airi_integration.social_next') }}</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            <TableRow v-for="row in socialRows" :key="row.kind">
+                                <TableCell>
+                                    <div class="flex items-center gap-2">
+                                        <Switch
+                                            :model-value="row.enabled"
+                                            :disabled="!airiStore.socialEnabled"
+                                            @update:modelValue="(value) => setSocialKind(row.kind, value)" />
+                                        <div class="min-w-0">
+                                            <div class="text-sm font-medium">{{ row.label }}</div>
+                                            <div class="text-xs text-muted-foreground whitespace-normal">
+                                                {{ row.description }}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </TableCell>
+                                <TableCell class="text-sm">{{ row.hour }}</TableCell>
+                                <TableCell class="text-sm">{{ row.day }}</TableCell>
+                                <TableCell class="text-xs whitespace-nowrap">{{ row.next }}</TableCell>
+                            </TableRow>
+                        </TableBody>
+                    </Table>
+                </div>
+            </div>
+
+            <div class="border rounded-lg p-4 space-y-3">
+                <h3 class="font-semibold flex items-center gap-2">
+                    <Radio class="size-4 text-primary" /> {{ t('view.airi_integration.social_events_header') }}
+                </h3>
+                <p class="text-xs text-muted-foreground">{{ t('view.airi_integration.social_events_description') }}</p>
+                <div v-if="!socialEvents.length" class="text-sm text-muted-foreground text-center py-3">
+                    {{ t('view.airi_integration.social_events_empty') }}
+                </div>
+                <div v-else class="border rounded-lg overflow-auto max-h-80">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>{{ t('view.airi_integration.column_time') }}</TableHead>
+                                <TableHead>{{ t('view.airi_integration.column_action') }}</TableHead>
+                                <TableHead>{{ t('view.airi_integration.column_player') }}</TableHead>
+                                <TableHead>{{ t('view.airi_integration.social_event_detail') }}</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            <TableRow v-for="event in socialEvents" :key="event.seq">
+                                <TableCell class="text-xs whitespace-nowrap">
+                                    {{ new Date(event.at).toLocaleTimeString() }}
+                                </TableCell>
+                                <TableCell class="text-xs">{{ event.type }}</TableCell>
+                                <TableCell class="text-sm font-medium">{{ event.displayName }}</TableCell>
+                                <TableCell class="text-xs text-muted-foreground">{{ eventDetail(event) }}</TableCell>
+                            </TableRow>
+                        </TableBody>
+                    </Table>
+                </div>
+            </div>
+        </div>
+
         <!-- Recent AIRI actions -->
         <div class="border rounded-lg p-4 space-y-3">
             <h3 class="font-semibold flex items-center gap-2">
@@ -348,7 +444,9 @@
         Copy,
         Eye,
         Gauge,
+        HeartHandshake,
         Plug,
+        Radio,
         Settings2,
         ShieldCheck,
         UserPlus
@@ -361,6 +459,7 @@
     import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
     import { useAiriIntegrationStore } from '@/stores/airiIntegration';
     import { AIRI_ACCEPT_PER_HOUR_OPTIONS, AIRI_ACTION_LIMITS } from '@/shared/utils/airiIntegration';
+    import { AIRI_SOCIAL_KINDS } from '@/shared/utils/airiSocial';
     import { AIRI_LOOKUP_BURST, AIRI_LOOKUP_HOURLY_CEILING, AIRI_LOOKUP_INTERVAL_MS } from '@/shared/utils/airiLookupQueue';
 
     const ENDPOINT_URL = 'http://127.0.0.1:34582/paw/players';
@@ -444,6 +543,75 @@
             };
         });
     });
+
+    const socialPause = computed(() => {
+        void tick.value;
+        void airiStore.socialVersion;
+        return airiStore.getSocialPause();
+    });
+
+    const socialStateText = computed(() => {
+        if (!airiStore.enabled || !airiStore.socialEnabled) {
+            return t('view.airi_integration.social_state_off');
+        }
+        if (socialPause.value.paused) {
+            return t('view.airi_integration.social_state_paused', { seconds: socialPause.value.retryAfterSec });
+        }
+        return airiStore.socialDryRun
+            ? t('view.airi_integration.social_state_dry_run')
+            : t('view.airi_integration.social_state_ready');
+    });
+
+    const socialStateVariant = computed(() => {
+        if (!airiStore.enabled || !airiStore.socialEnabled) {
+            return 'secondary';
+        }
+        return socialPause.value.paused ? 'destructive' : 'default';
+    });
+
+    const socialRows = computed(() => {
+        void tick.value;
+        void airiStore.socialVersion;
+        const budget = airiStore.getSocialBudget();
+        const now = Date.now();
+        return AIRI_SOCIAL_KINDS.map((kind) => {
+            const entry = budget[kind];
+            const nextIn = entry.nextAllowedAt ? Math.max(0, Math.round((entry.nextAllowedAt - now) / 1000)) : 0;
+            return {
+                kind,
+                enabled: Boolean(airiStore.socialKinds[kind]),
+                label: t(`view.airi_integration.social_kind_${kind}`),
+                description: t(`view.airi_integration.social_kind_${kind}_description`),
+                hour: entry.perHour ? `${entry.usedHour} / ${entry.perHour}` : String(entry.usedHour),
+                day: entry.perDay ? `${entry.usedDay} / ${entry.perDay}` : String(entry.usedDay),
+                next: nextIn
+                    ? `${new Date(entry.nextAllowedAt).toLocaleTimeString()} (${nextIn}s)`
+                    : t('view.airi_integration.social_now')
+            };
+        });
+    });
+
+    const socialEvents = computed(() => {
+        void tick.value;
+        void airiStore.socialVersion;
+        return airiStore.recentSocialEvents();
+    });
+
+    /**
+     * @param {string} kind
+     * @param {boolean} value
+     */
+    function setSocialKind(kind, value) {
+        airiStore.setSocialKindEnabled(kind, value);
+    }
+
+    /**
+     * @param {Record<string, any>} event
+     * @returns {string}
+     */
+    function eventDetail(event) {
+        return [event.emojiId, event.location, event.worldName, event.message].filter(Boolean).join(' · ');
+    }
 
     function setAcceptPerHour(value) {
         airiStore.setAcceptPerHour(Number(value));

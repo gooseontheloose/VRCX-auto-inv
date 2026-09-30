@@ -6,9 +6,10 @@ function getCurrentUserId() {
 }
 
 const inviteMessagesReq = {
-    refreshInviteMessageTableData(messageType) {
+    refreshInviteMessageTableData(messageType, options) {
         return request(`message/${getCurrentUserId()}/${messageType}`, {
-            method: 'GET'
+            method: 'GET',
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,
@@ -18,10 +19,11 @@ const inviteMessagesReq = {
         });
     },
 
-    editInviteMessage(params, messageType, slot) {
+    editInviteMessage(params, messageType, slot, options) {
         return request(`message/${getCurrentUserId()}/${messageType}/${slot}`, {
             method: 'PUT',
-            params
+            params,
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,

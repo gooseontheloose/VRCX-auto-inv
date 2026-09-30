@@ -53,6 +53,19 @@ namespace VRCX;
 ///   504 {"error":"timeout","result":"unknown"} - no answer within 25 s; the action may
 ///       still complete, so check friend-status before reporting a failure
 ///
+/// Social actions (Meow Meow): every write also needs "Allow AIRI social actions" (off by
+/// default; 403 {"error":"social_disabled"} / {"error":"kind_disabled"} otherwise). Reads need
+/// only the integration switch. All need X-Paw-Token.
+/// POST /paw/boop           {"userId","emojiId"?}                          -> result booped|not_friends|...
+/// POST /paw/invite         {"userId","messageSlot"?,"message"?,"flirty"?} -> result invited|not_in_instance|slot_cooldown|...
+/// POST /paw/invite-respond {"notificationId","responseSlot"?,"message"?}  -> result responded|already_responded|...
+/// POST /paw/self/status    {"status"?,"statusDescription"?}               -> result updated|unchanged|too_soon, nextAllowedAt
+/// POST /paw/note           {"userId","note"}                              -> result saved|unchanged
+/// GET  /paw/events?after=n  -> {"ok":true,"seq":n,"events":[...]}
+/// GET  /paw/user?userId=    -> {"ok":true,"user":{...}}
+/// GET  /paw/world           -> {"ok":true,"world":{...}}
+///   429 {"result":"rate_limited"|"too_soon","scope":"local"|"vrchat","retryAfterSec":n}
+///
 /// Common errors:
 ///   403 - request carries an Origin header (blocks cross-site reads from web pages)
 ///         or does not come from the loopback interface
@@ -76,6 +89,8 @@ public static class PawApi
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(25);
     private static readonly SemaphoreSlim ActionConcurrency = new(1, 1);
     private static readonly SemaphoreSlim PlayerConcurrency = new(4, 4);
+    private static readonly SemaphoreSlim SocialWriteConcurrency = new(2, 2);
+    private static readonly SemaphoreSlim SocialReadConcurrency = new(4, 4);
     private static readonly Regex UserIdRegex = new(
         "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         RegexOptions.CultureInvariant);
@@ -125,7 +140,8 @@ public static class PawApi
 
             var path = request.Url!.AbsolutePath.TrimEnd('/');
             var actionKind = GetActionKind(path);
-            var allowedMethod = actionKind is "friend-request" or "friend-accept" ? "POST" : "GET";
+            var socialKind = GetSocialKind(path, out var socialIsWrite);
+            var allowedMethod = actionKind is "friend-request" or "friend-accept" || socialIsWrite ? "POST" : "GET";
             if (!string.Equals(request.HttpMethod, allowedMethod, StringComparison.OrdinalIgnoreCase))
             {
                 response.Headers["Allow"] = allowedMethod;
@@ -136,6 +152,10 @@ public static class PawApi
             if (actionKind != null)
             {
                 await HandleAction(request, response, actionKind);
+            }
+            else if (socialKind != null)
+            {
+                await HandleSocial(request, response, socialKind, socialIsWrite);
             }
             else if (string.Equals(path, PlayerPath, StringComparison.OrdinalIgnoreCase))
             {
@@ -224,11 +244,33 @@ public static class PawApi
         return null;
     }
 
-    private static async Task<string> ReadUserId(HttpListenerRequest request, string kind)
+    /// <summary>Social routes: path -> store kind; isWrite for the POST routes.</summary>
+    internal static string GetSocialKind(string path, out bool isWrite)
     {
-        if (kind == "friend-status")
-            return request.QueryString["userId"];
+        isWrite = true;
+        switch (path?.ToLowerInvariant())
+        {
+            case "/paw/boop": return "boop";
+            case "/paw/invite": return "invite";
+            case "/paw/invite-respond": return "inviteRespond";
+            case "/paw/self/status": return "status";
+            case "/paw/note": return "note";
+        }
 
+        isWrite = false;
+        switch (path?.ToLowerInvariant())
+        {
+            case "/paw/events": return "events";
+            case "/paw/user": return "user";
+            case "/paw/world": return "world";
+        }
+
+        return null;
+    }
+
+    /// <summary>Reads a request body of at most <see cref="MaxBodyBytes"/>; null when larger.</summary>
+    private static async Task<byte[]> ReadBody(HttpListenerRequest request)
+    {
         if (request.ContentLength64 > MaxBodyBytes)
             return null;
 
@@ -238,12 +280,53 @@ public static class PawApi
         while (total < buffer.Length &&
                (read = await request.InputStream.ReadAsync(buffer.AsMemory(total, buffer.Length - total))) > 0)
             total += read;
-        if (total > MaxBodyBytes)
+        return total > MaxBodyBytes ? null : buffer.AsSpan(0, total).ToArray();
+    }
+
+    /// <summary>
+    /// The JSON payload handed to the store: the POST body (must be a JSON object) or, for GET,
+    /// the whitelisted query parameters. Re-serialized, so only well-formed JSON reaches the page.
+    /// </summary>
+    internal static string BuildSocialPayload(string kind, bool isWrite, byte[] body,
+        System.Collections.Specialized.NameValueCollection query)
+    {
+        if (!isWrite)
+        {
+            var args = new System.Collections.Generic.Dictionary<string, string>();
+            if (kind == "events" && query?["after"] != null)
+                args["after"] = query["after"];
+            if (kind == "user" && query?["userId"] != null)
+                args["userId"] = query["userId"];
+            return JsonSerializer.Serialize(args);
+        }
+
+        if (body == null)
+            return null;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Serialize(document.RootElement)
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<string> ReadUserId(HttpListenerRequest request, string kind)
+    {
+        if (kind == "friend-status")
+            return request.QueryString["userId"];
+
+        var body = await ReadBody(request);
+        if (body == null)
             return null;
 
         try
         {
-            using var document = JsonDocument.Parse(buffer.AsMemory(0, total));
+            using var document = JsonDocument.Parse(body);
             if (document.RootElement.ValueKind == JsonValueKind.Object &&
                 document.RootElement.TryGetProperty("userId", out var element) &&
                 element.ValueKind == JsonValueKind.String)
@@ -384,6 +467,101 @@ public static class PawApi
         await WriteJson(response, status, body);
     }
 
+    private static async Task HandleSocial(HttpListenerRequest request, HttpListenerResponse response,
+        string kind, bool isWrite)
+    {
+        if (!IsTokenValid(request.Headers[TokenHeader]))
+        {
+            logger.Warn("PAW API: social {0} rejected, missing or wrong {1}", kind, TokenHeader);
+            await WriteJson(response, 401, "{\"error\":\"unauthorized\"}");
+            return;
+        }
+
+        var payload = BuildSocialPayload(kind, isWrite, isWrite ? await ReadBody(request) : null,
+            request.QueryString);
+        if (payload == null)
+        {
+            await WriteJson(response, 400, "{\"ok\":false,\"error\":\"invalid_body\"}");
+            return;
+        }
+
+        var browser = GetReadyBrowser();
+        if (browser == null)
+        {
+            await WriteJson(response, 503, "{\"error\":\"not_ready\"}");
+            return;
+        }
+
+        // kind comes from a fixed table; payload is re-serialized JSON passed as a JSON string
+        // literal (System.Text.Json escapes quotes, '<', '>' and non-ASCII), parsed again by the page.
+        var script =
+            "var s=window.$pinia&&window.$pinia.airiIntegration;" +
+            "if(!s||typeof s.handleSocialRequest!=='function')return false;" +
+            $"return s.handleSocialRequest({JsonSerializer.Serialize(kind)},{JsonSerializer.Serialize(payload)});";
+        var (timedOut, resultJson) = await RunStoreRequest(browser,
+            isWrite ? SocialWriteConcurrency : SocialReadConcurrency, script);
+
+        if (timedOut)
+        {
+            if (isWrite)
+                logger.Warn("PAW API social {0} -> 504 timeout (result unknown)", kind);
+            await WriteJson(response, 504, TimeoutBody);
+            return;
+        }
+
+        if (resultJson == null)
+        {
+            await WriteJson(response, 503, "{\"error\":\"not_ready\"}");
+            return;
+        }
+
+        int status;
+        string body;
+        using (var document = JsonDocument.Parse(resultJson))
+        {
+            var root = document.RootElement;
+            status = root.GetProperty("status").GetInt32();
+            var bodyElement = root.GetProperty("body");
+            body = bodyElement.GetRawText();
+            if (isWrite)
+                logger.Info("PAW API social {0} target={1} -> {2} {3}", kind, SocialTarget(payload), status,
+                    SocialResult(bodyElement));
+        }
+
+        await WriteJson(response, status, body);
+    }
+
+    private static string SocialResult(JsonElement body)
+    {
+        if (body.ValueKind != JsonValueKind.Object)
+            return "";
+        if (body.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.String)
+            return result.GetString();
+        if (body.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+            return error.GetString();
+        return "";
+    }
+
+    private static string SocialTarget(string payload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            string target = null;
+            if (root.TryGetProperty("userId", out var user) && user.ValueKind == JsonValueKind.String)
+                target = user.GetString();
+            else if (root.TryGetProperty("notificationId", out var notification) &&
+                     notification.ValueKind == JsonValueKind.String)
+                target = notification.GetString();
+            return target != null && Regex.IsMatch(target, "^[a-z]{3}_[0-9a-f-]{36}$") ? target : "-";
+        }
+        catch (JsonException)
+        {
+            return "-";
+        }
+    }
+
     private static async Task HandlePlayer(HttpListenerRequest request, HttpListenerResponse response)
     {
         if (!IsTokenValid(request.Headers[TokenHeader]))
@@ -471,6 +649,12 @@ public static class PawApi
         int? acceptPerHour = null;
         JsonElement? lookups = null;
         JsonElement? friendBudget = null;
+        var socialEnabled = false;
+        var socialDryRun = false;
+        JsonElement? socialKinds = null;
+        JsonElement? socialPause = null;
+        JsonElement? socialBudget = null;
+        long? eventsSeq = null;
         using (var document = JsonDocument.Parse(json))
         {
             var root = document.RootElement;
@@ -494,6 +678,25 @@ public static class PawApi
             if (root.TryGetProperty("friendBudget", out var budgetElement) &&
                 budgetElement.ValueKind == JsonValueKind.Object)
                 friendBudget = budgetElement.Clone();
+            if (root.TryGetProperty("socialEnabled", out var socialElement) &&
+                socialElement.ValueKind == JsonValueKind.True)
+                socialEnabled = true;
+            if (root.TryGetProperty("socialDryRun", out var dryRunElement) &&
+                dryRunElement.ValueKind == JsonValueKind.True)
+                socialDryRun = true;
+            if (root.TryGetProperty("socialKinds", out var kindsElement) &&
+                kindsElement.ValueKind == JsonValueKind.Object)
+                socialKinds = kindsElement.Clone();
+            if (root.TryGetProperty("socialPause", out var pauseElement) &&
+                pauseElement.ValueKind == JsonValueKind.Object)
+                socialPause = pauseElement.Clone();
+            if (root.TryGetProperty("socialBudget", out var socialBudgetElement) &&
+                socialBudgetElement.ValueKind == JsonValueKind.Object)
+                socialBudget = socialBudgetElement.Clone();
+            if (root.TryGetProperty("eventsSeq", out var seqElement) &&
+                seqElement.ValueKind == JsonValueKind.Number &&
+                seqElement.TryGetInt64(out var seqValue))
+                eventsSeq = seqValue;
         }
 
         var status = JsonSerializer.Serialize(new
@@ -504,7 +707,13 @@ public static class PawApi
             playerCount,
             acceptPerHour,
             lookups,
-            friendBudget
+            friendBudget,
+            socialEnabled,
+            socialDryRun,
+            socialKinds,
+            socialPause,
+            socialBudget,
+            eventsSeq
         });
         await WriteJson(response, 200, status);
     }

@@ -89,6 +89,7 @@ vi.mock('../location', () => ({
     })
 }));
 vi.mock('../gameLog', () => ({ useGameLogStore: () => ({ state: {} }) }));
+vi.mock('../world', () => ({ useWorldStore: () => ({ cachedWorlds: new Map() }) }));
 
 import { useAiriIntegrationStore } from '../airiIntegration';
 

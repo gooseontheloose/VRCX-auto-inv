@@ -19,10 +19,11 @@ const miscReq = {
         });
     },
 
-    saveNote(params) {
+    saveNote(params, options) {
         return request('userNotes', {
             method: 'POST',
-            params
+            params,
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,
@@ -200,13 +201,14 @@ const miscReq = {
      * }} params
      * @returns {Promise<{ json: any; params }>}
      */
-    sendBoop(params) {
+    sendBoop(params, options) {
         return request(`users/${params.userId}/boop`, {
             method: 'POST',
             params: {
                 emojiId: params.emojiId
                 // inventoryItemId
-            }
+            },
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,

@@ -21,6 +21,7 @@ import { request } from './request';
 import { runUpdateFriendFlow } from '../coordinators/friendPresenceCoordinator';
 import { runSetCurrentUserLocationFlow } from '../coordinators/locationCoordinator';
 import { watchState } from './watchState';
+import { forwardAiriSocialEvent } from './airiSocialEvents';
 
 import * as workerTimers from 'worker-timers';
 
@@ -209,6 +210,9 @@ function handlePipeline(args) {
         // I forgot about this...
         delete content.user.state;
     }
+    // Before VRCX's own handling: friend-location compares against the
+    // current instance, which user-location updates below.
+    forwardAiriSocialEvent(type, content);
     switch (type) {
         case 'notification':
             notificationStore.handleNotification({
