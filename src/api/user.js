@@ -187,15 +187,17 @@ const userReq = {
 
     /**
      * @param {{ userId: string }} params
+     * @param {{ silentErrors?: boolean }} [options] Set silentErrors to skip the error toast (background lookups)
      * @returns {Promise<{
      *     json: import('../types/api/profile').publicProfile;
      *     params: { userId: string };
      *     ref: import('../types/api/profile').publicProfile & { $lastFetch?: number };
      * }>}
      */
-    getPublicProfile(params) {
+    getPublicProfile(params, options) {
         return request(`profile/${params.userId}`, {
-            method: 'GET'
+            method: 'GET',
+            silentErrors: options?.silentErrors
         }).then((json) => {
             json.$lastFetch = Date.now();
             const args = {

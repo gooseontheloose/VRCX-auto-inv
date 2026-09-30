@@ -550,7 +550,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         if (kind === 'group') {
             // Straight to the API: the query layer would retry a 429 on its
             // own, and the queue is already the cache and the pacer.
-            const args = await groupRequest.getRepresentedGroup({ userId });
+            // Silent: failures are retried by the queue, no toast per attempt.
+            const args = await groupRequest.getRepresentedGroup({ userId }, { silentErrors: true });
             const json = args?.json;
             // Only a successful answer without a group means "no group".
             const name = json && typeof json.name === 'string' ? json.name : '';
@@ -566,7 +567,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
         // The bio lives on the public profile now; this also fills VRCX
         // core's profile cache (applyPublicProfile) for the user dialog.
-        const args = await userRequest.getPublicProfile({ userId });
+        // Silent like the group lookup: a 403/404 profile is retried, not toasted.
+        const args = await userRequest.getPublicProfile({ userId }, { silentErrors: true });
         rememberProfile(userId, args?.json, Date.now());
     }
 

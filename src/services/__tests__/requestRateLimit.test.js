@@ -9,7 +9,8 @@ import {
 } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-    execute: vi.fn()
+    execute: vi.fn(),
+    toastError: vi.fn()
 }));
 
 // Mock router to avoid transitive i18n.global error from columns.jsx
@@ -18,7 +19,9 @@ vi.mock('../../plugins/router.js', () => ({
     initRouter: vi.fn()
 }));
 vi.mock('../webapi.js', () => ({ default: { execute: mocks.execute } }));
-vi.mock('vue-sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+vi.mock('vue-sonner', () => ({
+    toast: { error: mocks.toastError, success: vi.fn() }
+}));
 vi.mock('../../stores', () => ({
     useAuthStore: () => ({}),
     useModalStore: () => ({}),
@@ -27,7 +30,8 @@ vi.mock('../../stores', () => ({
     useUserStore: () => ({ currentUser: { id: 'usr_me' } })
 }));
 vi.mock('../../coordinators/userCoordinator', () => ({
-    getCurrentUser: vi.fn()
+    getCurrentUser: vi.fn(),
+    applyPublicProfile: vi.fn((json) => json)
 }));
 vi.mock('../../coordinators/groupCoordinator', () => ({
     applyGroup: vi.fn((json) => json)
@@ -36,6 +40,7 @@ vi.mock('../watchState', () => ({ watchState: { isLoggedIn: true } }));
 
 import { onVrchatRateLimit } from '../vrchatRateLimit';
 import groupRequest from '../../api/group';
+import userRequest from '../../api/user';
 
 const USER = 'usr_00000000-0000-4000-8000-000000000001';
 
@@ -64,6 +69,7 @@ afterAll(() => {
 
 beforeEach(() => {
     mocks.execute.mockReset();
+    mocks.toastError.mockReset();
 });
 
 describe('VRChat 429 at the request layer', () => {
@@ -112,5 +118,48 @@ describe('VRChat 429 at the request layer', () => {
         } finally {
             off();
         }
+    });
+});
+
+describe('silent background lookups (AIRI)', () => {
+    function notFound() {
+        return Promise.resolve({
+            status: 404,
+            data: JSON.stringify({
+                error: { message: 'Not found', status_code: 404 }
+            })
+        });
+    }
+
+    test('a silent profile 404 rejects without an error toast', async () => {
+        mocks.execute.mockImplementation(notFound);
+        await expect(
+            userRequest.getPublicProfile(
+                { userId: 'usr_00000000-0000-4000-8000-000000000010' },
+                { silentErrors: true }
+            )
+        ).rejects.toMatchObject({ status: 404 });
+        expect(mocks.toastError).not.toHaveBeenCalled();
+    });
+
+    test('a silent represented-group 404 rejects without an error toast', async () => {
+        mocks.execute.mockImplementation(notFound);
+        await expect(
+            groupRequest.getRepresentedGroup(
+                { userId: 'usr_00000000-0000-4000-8000-000000000011' },
+                { silentErrors: true }
+            )
+        ).rejects.toMatchObject({ status: 404 });
+        expect(mocks.toastError).not.toHaveBeenCalled();
+    });
+
+    test('a normal profile 404 still shows the toast', async () => {
+        mocks.execute.mockImplementation(notFound);
+        await expect(
+            userRequest.getPublicProfile({
+                userId: 'usr_00000000-0000-4000-8000-000000000012'
+            })
+        ).rejects.toMatchObject({ status: 404 });
+        expect(mocks.toastError).toHaveBeenCalledTimes(1);
     });
 });

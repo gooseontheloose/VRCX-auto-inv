@@ -96,11 +96,13 @@ const groupReq = {
     },
     /**
      * @param {{ userId: string }} params
+     * @param {{ silentErrors?: boolean }} [options] Set silentErrors to skip the error toast (background lookups)
      * @returns {Promise<{ json: any; params }>}
      */
-    getRepresentedGroup(params) {
+    getRepresentedGroup(params, options) {
         return request(`users/${params.userId}/groups/represented`, {
-            method: 'GET'
+            method: 'GET',
+            silentErrors: options?.silentErrors
         }).then((json) => {
             const args = {
                 json,

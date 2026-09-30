@@ -389,6 +389,10 @@ describe('AIRI lookups at stream scale', () => {
             representedGroup: { name: 'Cached Club', shortCode: 'CC' }
         });
         expect(p2).toMatchObject({ bio: 'bio of 2', isVRCPlus: false });
+        expect(mocks.api.fetch).toHaveBeenCalledWith(
+            { userId: uid(2) },
+            { silentErrors: true }
+        );
         expect(mocks.savedRows.get(uid(2))).toMatchObject({
             bio: 'bio of 2',
             groupName: 'Group 2'
@@ -456,9 +460,11 @@ describe('AIRI lookups at stream scale', () => {
         store.enqueueCurrentPlayers();
         await vi.advanceTimersByTimeAsync(10 * 1000);
         expect(calls.map((c) => c.kind)).toEqual(['profile']);
-        expect(mocks.api.getPublicProfile).toHaveBeenCalledWith({
-            userId: uid(7)
-        });
+        expect(mocks.api.getPublicProfile).toHaveBeenCalledWith(
+            { userId: uid(7) },
+            // background lookup: failures retry quietly, no toast per attempt
+            { silentErrors: true }
+        );
         expect(mocks.api.getUser).not.toHaveBeenCalled();
         expect(store.buildPayload().players[0].bio).toBe('bio of 7');
     });
