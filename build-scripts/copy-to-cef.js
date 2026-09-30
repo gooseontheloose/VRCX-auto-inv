@@ -19,6 +19,29 @@ if (!fs.existsSync(path.join(root, 'build', 'Cef'))) {
     process.exit(0);
 }
 
+// Since the upstream 2026-09 merge the frontend no longer has WINDOWS/LINUX
+// baked in: the .NET host injects them (PlatformRenderProcessMessageHandler).
+// Copying the new html into an older host would leave VRCX half-working, so
+// only copy when build/Cef holds a host that has the injector. Rebuild the
+// .NET host into build/Cef first (with VRCX closed), or set
+// VRCX_FORCE_COPY_TO_CEF=1 to copy anyway.
+const hostDll = path.join(root, 'build', 'Cef', 'VRCX.dll');
+if (process.env.VRCX_FORCE_COPY_TO_CEF !== '1') {
+    let hostOk = false;
+    try {
+        hostOk = fs.readFileSync(hostDll).includes('PlatformRenderProcessMessageHandler');
+    } catch {
+        hostOk = false;
+    }
+    if (!hostOk) {
+        console.warn(
+            '[copy-to-cef] build/Cef has no VRCX.dll with PlatformRenderProcessMessageHandler (an older .NET host) — skipping copy. ' +
+                'Close VRCX, rebuild the .NET host into build/Cef, then copy (or set VRCX_FORCE_COPY_TO_CEF=1).'
+        );
+        process.exit(0);
+    }
+}
+
 function copyDir(from, to) {
     fs.mkdirSync(to, { recursive: true });
     for (const entry of fs.readdirSync(from, { withFileTypes: true })) {

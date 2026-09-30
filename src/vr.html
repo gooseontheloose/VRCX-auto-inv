@@ -10,6 +10,14 @@
     </head>
     <body>
         <div id="root"></div>
+        <script>
+            // The .NET host / Electron preload inject these before page scripts;
+            // this only covers a host that predates that (no ReferenceError).
+            if (typeof window.WINDOWS === 'undefined') {
+                window.WINDOWS = typeof CefSharp !== 'undefined';
+                window.LINUX = !window.WINDOWS;
+            }
+        </script>
         <script type="module" src="./vr/vr.js"></script>
     </body>
 </html>
