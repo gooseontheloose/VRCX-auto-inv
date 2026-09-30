@@ -21,18 +21,18 @@ Nothing is sent while the switch is off.
 
 Every ping is a small JSON message with exactly these fields, and nothing else:
 
-| Field | Example | What it is |
-| --- | --- | --- |
-| `installId` | `1b4e28ba-…` | A random ID made on your PC the first time a ping is sent. It is not based on your account, hardware or anything else. |
-| `sessionId` | `3f2a9c1e-…` | A random ID for this run of the app, new every time you start it. |
-| `event` | `tick` | `start`, `tick` (every 20 minutes) or `close`. |
-| `seq` | `3` | The ping's number within this run, so a ping that is sent again (no answer the first time) isn't counted twice. |
-| `appVersion` | `2.3.1` | PAW Inviter's version. |
-| `os` | `windows` | `windows`, `linux` or `macos`. |
-| `runtime` | `cef` | `cef` (Windows app) or `electron` (Linux/macOS app). |
-| `locale` | `en` | The language code of the app's UI language, never the region. |
-| `features` | | On/off flags: Auto Inviter on (or turned on since the last ping), Group Monitor background checks, group webhooks, AIRI integration, AIRI actions, whether the Username Checker was ever used, and your update setting (Off / Notify / Auto Download). |
-| `counters` | `"invitesSent": 12` | How many times each of these happened since the last ping: invites sent, Auto Inviter turned on, Group Monitor pages opened, webhook posts delivered, webhook posts failed, audit-log gaps filled, usernames checked, AIRI friend requests sent or accepted, VRChat crash rejoins. Numbers only. |
+| Field        | Example             | What it is                                                                                                                                                                                                                                                                                       |
+| ------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `installId`  | `1b4e28ba-…`        | A random ID made on your PC the first time a ping is sent. It is not based on your account, hardware or anything else.                                                                                                                                                                           |
+| `sessionId`  | `3f2a9c1e-…`        | A random ID for this run of the app, new every time you start it.                                                                                                                                                                                                                                |
+| `event`      | `tick`              | `start`, `tick` (every 20 minutes) or `close`.                                                                                                                                                                                                                                                   |
+| `seq`        | `3`                 | The ping's number within this run, so a ping that is sent again (no answer the first time) isn't counted twice.                                                                                                                                                                                  |
+| `appVersion` | `2.3.1`             | PAW Inviter's version.                                                                                                                                                                                                                                                                           |
+| `os`         | `windows`           | `windows`, `linux` or `macos`.                                                                                                                                                                                                                                                                   |
+| `runtime`    | `cef`               | `cef` (Windows app) or `electron` (Linux/macOS app).                                                                                                                                                                                                                                             |
+| `locale`     | `en`                | The language code of the app's UI language, never the region.                                                                                                                                                                                                                                    |
+| `features`   |                     | On/off flags: Auto Inviter on (or turned on since the last ping), Group Monitor background checks, group webhooks, AIRI integration, AIRI actions, whether the Username Checker was ever used, and your update setting (Off / Notify / Auto Download).                                           |
+| `counters`   | `"invitesSent": 12` | How many times each of these happened since the last ping: invites sent, Auto Inviter turned on, Group Monitor pages opened, webhook posts delivered, webhook posts failed, audit-log gaps filled, usernames checked, AIRI friend requests sent or accepted, VRChat crash rejoins. Numbers only. |
 
 ## What is never sent
 
@@ -53,10 +53,18 @@ The server keeps:
 - per app run, one row: its install ID, start, last ping, close and time open, plus the `seq` numbers already received (to drop re-sent pings)
 - across everyone, a total of time open per hour, with no install ID (for a "busiest hours" chart)
 
-Everything is deleted after **400 days**: daily rows, app runs and hourly totals 400 days after that day, and an install's "latest state" row 400 days after its last ping. Only Oliver (the PAW Inviter maintainer) can see the dashboard; nothing is sold or shared.
+Everything is deleted after **400 days** (or earlier on request, see below): daily rows, app runs and hourly totals 400 days after that day, and an install's "latest state" row 400 days after its last ping. Only Oliver (the PAW Inviter maintainer) can see the dashboard; nothing is sold or shared.
 
 Anyone could send made-up pings to the server, so these numbers are treated as a trend, not as an exact count.
 
-## Questions or deletion
+## See or delete your data
 
-Open an issue at [github.com/gooseontheloose/VRCX-auto-inv/issues](https://github.com/gooseontheloose/VRCX-auto-inv/issues). Because nothing links the data to you, we can't look it up by your account. If you want your data deleted, include your install ID: it's the value of the key `config:vrcx_telemetryinstallid` in the `configs` table of `%AppData%\VRCX\VRCX.sqlite3`.
+Nothing links the stats to your VRChat account, so we can only find them by your install ID:
+
+1. **Settings → System → Copy my install ID** (next to the usage stats switch) copies it. If it says there is no ID yet, nothing has been sent from this PC.
+2. If you want sending to stop too, turn the switch off first. Otherwise the next ping starts a new record under the same ID.
+3. Open an issue at [github.com/gooseontheloose/VRCX-auto-inv/issues](https://github.com/gooseontheloose/VRCX-auto-inv/issues) (or contact the maintainer privately if you prefer not to post it) with your install ID and whether you want a copy of the data, deletion, or both.
+
+We then export everything stored under that ID (its latest-state row, daily rows and app runs) and send it to you if you asked, and delete all of it. The hourly "busiest hours" totals have no install ID in them and are not affected. Requests are handled by hand; the server's logs never contain install IDs.
+
+The install ID is also the value of the key `config:vrcx_telemetryinstallid` in the `configs` table of `%AppData%\VRCX\VRCX.sqlite3`.

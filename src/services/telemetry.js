@@ -7,4 +7,4 @@
  *
  * Call sites only ever pass a counter name and a number.
  */
-export { available, countUsage, isEnabled, messages, setEnabled, start } from '@paw/telemetry';
+export { available, countUsage, getInstallId, isEnabled, messages, setEnabled, start } from '@paw/telemetry';

@@ -4,6 +4,7 @@ import { defineStore } from 'pinia';
 import {
     available as moduleAvailable,
     countUsage,
+    getInstallId as moduleGetInstallId,
     messages,
     setEnabled as moduleSetEnabled,
     start
@@ -81,10 +82,26 @@ export const useTelemetryStore = defineStore('Telemetry', () => {
         await moduleSetEnabled(Boolean(value));
     }
 
+    /**
+     * This install's random ID, for a "delete my data" request ('' in builds without the module
+     * or before the first ping).
+     *
+     * @returns {Promise<string>}
+     */
+    async function getInstallId() {
+        if (!available) return '';
+        try {
+            return (await moduleGetInstallId()) || '';
+        } catch {
+            return '';
+        }
+    }
+
     return {
         available,
         messages: available ? messages : null,
         enabled,
-        setEnabled
+        setEnabled,
+        getInstallId
     };
 });

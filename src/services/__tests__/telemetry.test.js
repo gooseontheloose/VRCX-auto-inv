@@ -14,11 +14,12 @@ describe('telemetry plug-in point (stub build)', () => {
     test('the stub has the module API and sends nothing', async () => {
         const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('no')));
         expect(Object.keys(stub).sort()).toEqual(
-            ['available', 'countUsage', 'isEnabled', 'messages', 'setEnabled', 'start'].sort()
+            ['available', 'countUsage', 'getInstallId', 'isEnabled', 'messages', 'setEnabled', 'start'].sort()
         );
         await expect(stub.start({})).resolves.toBeUndefined();
         await expect(stub.setEnabled(true)).resolves.toBeUndefined();
         expect(stub.isEnabled()).toBe(false);
+        await expect(stub.getInstallId()).resolves.toBe('');
         expect(stub.countUsage('invitesSent', 3)).toBeUndefined();
         expect(fetchSpy).not.toHaveBeenCalled();
         fetchSpy.mockRestore();

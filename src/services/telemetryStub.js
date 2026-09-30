@@ -6,7 +6,17 @@
 
 export const available = false;
 
-/** @type {null | { toggleLabel: string; toggleDescription: string; notice: string; learnMore: string }} */
+/**
+ * @type {null | {
+ *     toggleLabel: string;
+ *     toggleDescription: string;
+ *     notice: string;
+ *     learnMore: string;
+ *     copyInstallId: string;
+ *     installIdCopied: string;
+ *     noInstallId: string;
+ * }}
+ */
 export const messages = null;
 
 /**
@@ -28,6 +38,15 @@ export function setEnabled(_value) {
 /** @returns {boolean} */
 export function isEnabled() {
     return false;
+}
+
+/**
+ * The stub has no install ID.
+ *
+ * @returns {Promise<string>}
+ */
+export function getInstallId() {
+    return Promise.resolve('');
 }
 
 /**

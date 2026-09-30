@@ -30,6 +30,7 @@ describe('useTelemetryStore without the telemetry module', () => {
         expect(store.enabled).toBe(false);
         await store.setEnabled(true);
         expect(store.enabled).toBe(false);
+        await expect(store.getInstallId()).resolves.toBe('');
         expect(configRepository.getBool).not.toHaveBeenCalled();
         expect(configRepository.setBool).not.toHaveBeenCalled();
         expect(fetchSpy).not.toHaveBeenCalled();
