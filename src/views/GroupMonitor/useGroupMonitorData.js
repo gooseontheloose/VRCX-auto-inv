@@ -314,9 +314,14 @@ async function fetchAuditPage(groupId, page) {
 }
 
 async function fetchAuditBefore(groupId, beforeDate) {
+    // +1 ms: entries sharing the oldest cached millisecond may not all be
+    // cached yet, whether VRChat's endDate is inclusive or not (callers
+    // drop the ones already known).
+    const end = Date.parse(beforeDate);
+    const endDate = Number.isFinite(end) ? new Date(end + 1).toISOString() : beforeDate;
     const data = await request(`groups/${groupId}/auditLogs`, {
         method: 'GET',
-        params: { n: auditPageSize, endDate: beforeDate }
+        params: { n: auditPageSize, endDate }
     });
     const entries = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
     return entries;

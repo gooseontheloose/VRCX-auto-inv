@@ -18,7 +18,12 @@ export const REPAIR_SCAN_VERSION = 1;
 export const MAX_WINDOW_OFFSET = 7500;
 /** Closed windows remembered so a re-scan does not queue them again. */
 export const MAX_CHECKED = 300;
-/** A gap that keeps failing (403/5xx) is given up after this many tries. */
+/**
+ * A gap is only given up when VRChat keeps saying the group is gone (404)
+ * this many times. Other failures (429, 403 on one account, 5xx, offline)
+ * keep the gap and retry with backoff: dropping it would leave a permanent
+ * hole, since the poll marker has already moved past it.
+ */
 export const MAX_GAP_ATTEMPTS = 10;
 
 const HOUR = 3_600_000;
@@ -84,11 +89,16 @@ export function newestMark(entries) {
  * @param {string} source
  */
 export function makeGap(window, source) {
+    // `before` is the oldest entry that was fetched (or cached). Entries
+    // sharing its millisecond may sit on the next, unfetched page, so the
+    // window ends 1 ms later: it holds whether VRChat treats endDate as
+    // inclusive or exclusive (duplicates are harmless).
+    const before = Number.isFinite(ms(window.before)) ? iso(ms(window.before) + 1) : window.before;
     return {
-        id: `gap-${ms(window.before)}-${Math.random().toString(36).slice(2, 8)}`,
+        id: `gap-${ms(before)}-${Math.random().toString(36).slice(2, 8)}`,
         after: window.after ?? null,
-        before: window.before,
-        origBefore: window.before,
+        before,
+        origBefore: before,
         offset: 0,
         attempts: 0,
         source

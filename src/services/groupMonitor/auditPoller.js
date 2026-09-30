@@ -39,8 +39,9 @@ export function advanceWatermark(entries, prev) {
  * Pages back from the newest entry until it reaches `watermark` (the last
  * entry this account reported) or, when this account has no watermark yet,
  * `cacheMark` (the newest cached entry), bounded by maxPages. When it runs out
- * of pages first, `gap` is the window it could not fetch; the caller must
- * queue it for backfill before moving the watermark past it.
+ * of pages first, `gap` is the window it could not fetch and that is not
+ * already cached (it starts at the newer of watermark and cacheMark); the
+ * caller must queue it for backfill before moving the watermark past it.
  * @param {object} opts
  * @param {(offset: number) => Promise<{entries: any[], totalCount?: number}>} opts.fetchPage
  * @param {Watermark|null} opts.watermark
@@ -94,7 +95,16 @@ export async function pollAuditLog({
         const oldest = unique.reduce((m, e) =>
             e.created_at < m.created_at ? e : m
         );
-        gap = { after: stopMark.at, before: oldest.created_at };
+        // Entries up to the newest cached one are already in the shared
+        // cache (whoever cached them queued their own gaps), so a stale
+        // per-account watermark does not re-download them.
+        const after =
+            cacheMark?.at && cacheMark.at > stopMark.at
+                ? cacheMark.at
+                : stopMark.at;
+        if (after < oldest.created_at) {
+            gap = { after, before: oldest.created_at };
+        }
     }
     return {
         newEntries,

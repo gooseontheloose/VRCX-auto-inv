@@ -922,6 +922,43 @@ describe('gap-aware catch-up and backfill', () => {
         t = await cycles(3, t); // pause is 2 minutes
         expect(windowCalls().length).toBeGreaterThan(before);
     });
+
+    test('a failed cache write keeps the watermark, so the entries are fetched again', async () => {
+        await seedAccount('usr_a', []);
+        addKicks(1, 50);
+        freshApp();
+        await login('usr_a');
+        await flush(20);
+
+        addKicks(51, 120);
+        const { auditDbSaveEntries } = await import('../../services/auditLogDb');
+        vi.mocked(auditDbSaveEntries).mockRejectedValueOnce(new Error('QuotaExceededError'));
+        const store = useGroupMonitorStore();
+        const t = await cycles(1);
+        expect(store.pollStatus[GROUP_A].ok).toBe(false);
+        await cycles(1, t);
+        expect(store.pollStatus[GROUP_A].ok).toBe(true);
+        const cached = new Set(mocks.idb.get(GROUP_A).map((e) => e.id));
+        for (let i = 1; i <= 120; i++) expect(cached.has(kick(i).id)).toBe(true);
+        expect(mocks.meta.get(GROUP_A)?.gaps ?? []).toEqual([]);
+    });
+
+    test('a stale watermark does not queue what the other account already cached', async () => {
+        await seedAccount('usr_a', []);
+        addKicks(1, 50);
+        freshApp();
+        await login('usr_a');
+        await logout();
+
+        // the other account kept polling: everything but the newest 10 is cached
+        addKicks(51, 1550);
+        mocks.idb.set(GROUP_A, auditLog.slice(10));
+        freshApp();
+        await login('usr_a');
+        await flush(20);
+        expect(mocks.meta.get(GROUP_A)?.gaps ?? []).toEqual([]);
+        expect(windowCalls()).toEqual([]);
+    });
 });
 
 describe('monitoring per account', () => {

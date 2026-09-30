@@ -18,9 +18,13 @@ namespace VRCX
     public class Update
     {
         private static readonly Logger logger = LogManager.GetCurrentClassLogger();
-        private static readonly string VrcxSetupExecutable = Path.Join(Program.AppDataDirectory, "VRCX_Setup.exe");
-        private static readonly string UpdateExecutable = Path.Join(Program.AppDataDirectory, "update.exe");
-        private static readonly string TempDownload = Path.Join(Program.AppDataDirectory, "tempDownload");
+        // %AppData%\VRCX is shared with upstream VRCX and with older builds of this fork, which run
+        // any update.exe they find there without checking it. The fork's own file names keep its
+        // downloads out of their reach (and theirs out of ours).
+        private const string SetupProcessName = "PAWInviter_Setup";
+        private static readonly string VrcxSetupExecutable = Path.Join(Program.AppDataDirectory, SetupProcessName + ".exe");
+        private static readonly string UpdateExecutable = Path.Join(Program.AppDataDirectory, "PAWInviter_update.exe");
+        private static readonly string TempDownload = Path.Join(Program.AppDataDirectory, "PAWInviter_tempDownload");
         // What the fork's installer (Installer/installer.nsi) writes: VIAddVersionKey "ProductName"
         // and InstallDirRegKey (a 32-bit NSIS installer, so it lands under WOW6432Node).
         private const string InstallerProductName = "PAW Inviter - VRCX";
@@ -53,7 +57,7 @@ namespace VRCX
 
         public static void Check()
         {
-            if (Process.GetProcessesByName("VRCX_Setup").Length > 0)
+            if (Process.GetProcessesByName(SetupProcessName).Length > 0)
                 Environment.Exit(0);
 
             if (File.Exists(TempDownload))
@@ -66,7 +70,7 @@ namespace VRCX
         }
 
         /// <summary>
-        /// True when %AppData%\VRCX\update.exe is a PAW Inviter installer that this copy should run.
+        /// True when %AppData%\VRCX\PAWInviter_update.exe is a PAW Inviter installer that this copy should run.
         /// The folder is shared with upstream VRCX and with dev/portable builds of this fork: an
         /// update downloaded by the installed copy must not be run by a build started from somewhere
         /// else (it would launch the installer and exit instead of starting), and an upstream VRCX

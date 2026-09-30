@@ -695,11 +695,11 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             const watermark = watermarks.value[groupId] ?? null;
             // No watermark on this account yet: page back to the newest
             // cached entry instead of trusting page 0 to cover the downtime.
-            const cacheMark = watermark?.at
-                ? null
-                : newestMark(
-                      await indexedAuditDb.loadNewest(groupId).catch(() => [])
-                  );
+            // With one, the newest cached entry still bounds the gap, so a
+            // stale watermark does not queue what the other account cached.
+            const cacheMark = newestMark(
+                await indexedAuditDb.loadNewest(groupId).catch(() => [])
+            );
             const res = await pollAuditLog({
                 fetchPage: (offset) => fetchAuditPage(groupId, offset),
                 watermark,
@@ -713,20 +713,20 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                 await recordGap(indexedAuditDb, groupId, res.gap, 'catch-up');
                 if (gen !== generation) return;
             }
+            if (res.fetched.length) {
+                // Cached before the watermark moves: if this write fails the
+                // poll fails, the old watermark stays and the next cycle
+                // fetches the same entries again.
+                await auditDbSaveEntries(groupId, res.fetched);
+                if (gen !== generation) return;
+            }
             catchUpDone.add(groupId);
             watermarks.value = {
                 ...watermarks.value,
                 [groupId]: res.watermark
             };
-            if (res.fetched.length) {
-                auditDbSaveEntries(groupId, res.fetched).catch((err) =>
-                    console.warn(
-                        '[GroupMonitor] failed to cache audit entries:',
-                        err
-                    )
-                );
+            if (res.fetched.length)
                 notifyAuditListeners(groupId, res.fetched, res.totalCount);
-            }
             pollStatus.value = {
                 ...pollStatus.value,
                 [groupId]: {

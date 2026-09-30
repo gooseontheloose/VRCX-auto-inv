@@ -116,4 +116,23 @@ describe('pollAuditLog', () => {
         expect(res.truncated).toBe(true);
         expect(res.gap).toEqual({ after: all[800].created_at, before: all[499].created_at });
     });
+
+    test('the gap starts at the newest cached entry when that is newer than the watermark', async () => {
+        const all = entries(3000);
+        const wm = advanceWatermark(all.slice(2900), null); // stale: this account was away
+        const cacheMark = advanceWatermark(all.slice(1500), null); // the other account cached up to here
+        const res = await pollAuditLog({ fetchPage: pager(all), watermark: wm, cacheMark, maxPages: 5 });
+        expect(res.gap).toEqual({ after: all[1500].created_at, before: all[499].created_at });
+        // posting still follows this account's own watermark
+        expect(res.newEntries).toHaveLength(500);
+    });
+
+    test('no gap when the cache already reaches past the fetched pages', async () => {
+        const all = entries(3000);
+        const wm = advanceWatermark(all.slice(2900), null);
+        const cacheMark = advanceWatermark(all.slice(10), null);
+        const res = await pollAuditLog({ fetchPage: pager(all), watermark: wm, cacheMark, maxPages: 5 });
+        expect(res.truncated).toBe(true);
+        expect(res.gap).toBeNull();
+    });
 });

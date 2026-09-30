@@ -134,8 +134,15 @@ export async function drainGaps({
                 if (step.entries.length) await db.saveEntries(groupId, step.entries);
             } catch (err) {
                 result.error = err;
+                const status = err?.status;
+                if (status === 429) {
+                    // rate limited: the store pauses all backfill; the gap
+                    // itself did nothing wrong, so it keeps its attempts
+                    changes.set(gap.id, { ...gap, nextTryAt: nowMs + gapRetryDelayMs(1) });
+                    break outer;
+                }
                 const attempts = (gap.attempts ?? 0) + 1;
-                if (attempts >= MAX_GAP_ATTEMPTS) {
+                if (status === 404 && attempts >= MAX_GAP_ATTEMPTS) {
                     console.warn(
                         `[GroupMonitor] giving up on audit gap ${gap.after} → ${gap.before} for ${groupId}:`,
                         err

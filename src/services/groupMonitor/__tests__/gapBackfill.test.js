@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
-import { REPAIR_SCAN_VERSION, findCacheHoles, isWindowChecked } from '../auditGaps';
+import { MAX_GAP_ATTEMPTS, REPAIR_SCAN_VERSION, findCacheHoles, isWindowChecked, newestMark } from '../auditGaps';
+import { pollAuditLog } from '../auditPoller';
 import { drainGaps, recordGap, runRepairScan } from '../gapBackfill';
 import { createAuditServer, createMemoryAuditDb, steadyLog, utcDay } from './auditFixtures';
 
@@ -185,5 +186,95 @@ describe('quiet periods and dead ends', () => {
         });
         expect(res.requests).toBe(1);
         expect(db.meta.get(GID).gaps).toHaveLength(1);
+    });
+});
+
+describe('failures never lose a gap', () => {
+    const httpError = (status) => Object.assign(new Error(`HTTP ${status}`), { status });
+
+    function missing(db, all) {
+        const have = new Set(db.all(GID).map((e) => e.id));
+        return all.filter((e) => !have.has(e.id)).length;
+    }
+
+    async function drainFor(db, server, from, minutes) {
+        let t = from;
+        for (let i = 0; i < minutes; i++) {
+            t += 60_000;
+            await cycle(db, server, t);
+        }
+        return t;
+    }
+
+    test('hours of 5xx / offline keep the gap, which fills once VRChat is back', async () => {
+        const all = steadyLog('2026-09-20T00:00:00Z', '2026-09-29T00:00:00Z', 6);
+        const db = createMemoryAuditDb();
+        const server = createAuditServer(all);
+        db.seed(
+            GID,
+            all.filter((_, i) => i < 100 || i > 800)
+        );
+        await runRepairScan({ db, groupId: GID, nowMs: NOW }); // already ran at first start
+        await recordGap(db, GID, { after: all[801].created_at, before: all[99].created_at }, 'catch-up');
+
+        server.fail = httpError(503);
+        let t = await drainFor(db, server, NOW, 400);
+        server.fail = httpError(-1);
+        t = await drainFor(db, server, t, 200);
+        expect(db.meta.get(GID).gaps).toHaveLength(1);
+        // backed off to at most one try an hour
+        expect(server.requests.length).toBeLessThan(25);
+
+        server.fail = null;
+        await drainFor(db, server, t, 120);
+        expect(db.meta.get(GID).gaps).toEqual([]);
+        expect(missing(db, all)).toBe(0);
+    });
+
+    test('repeated 429s never drop a gap or count as failed attempts', async () => {
+        const all = steadyLog('2026-09-01T00:00:00Z', '2026-09-20T00:00:00Z', 6);
+        const db = createMemoryAuditDb();
+        const server = createAuditServer(all);
+        await recordGap(db, GID, { after: '2026-09-10T00:00:00Z', before: '2026-09-11T00:00:00Z' }, 'catch-up');
+        server.fail = httpError(429);
+        await drainFor(db, server, NOW, 5 * MAX_GAP_ATTEMPTS);
+        expect(server.requests.length).toBeGreaterThanOrEqual(MAX_GAP_ATTEMPTS);
+        const [gap] = db.meta.get(GID).gaps;
+        expect(gap.attempts).toBe(0);
+    });
+
+    test('only a group that stays gone (404) is given up', async () => {
+        const all = steadyLog('2026-09-01T00:00:00Z', '2026-09-20T00:00:00Z', 6);
+        const db = createMemoryAuditDb();
+        const server = createAuditServer(all);
+        await recordGap(db, GID, { after: '2026-09-10T00:00:00Z', before: '2026-09-11T00:00:00Z' }, 'catch-up');
+        server.fail = httpError(404);
+        await drainFor(db, server, NOW, 24 * 60);
+        expect(db.meta.get(GID).gaps).toEqual([]);
+        expect(server.requests).toHaveLength(MAX_GAP_ATTEMPTS);
+    });
+});
+
+describe('gap boundaries', () => {
+    test('entries sharing the oldest fetched millisecond are not lost when endDate is exclusive', async () => {
+        const all = steadyLog('2026-09-20T00:00:00Z', '2026-09-29T00:00:00Z', 6);
+        // 498, 499 end the last fetched page; 500, 501 share their millisecond
+        // but sit on the next, unfetched page
+        for (let i = 498; i < 502; i++) all[i] = { ...all[i], created_at: all[498].created_at };
+        const server = createAuditServer(all, { endInclusive: false });
+        const db = createMemoryAuditDb();
+        const cached = all.slice(900);
+        db.seed(GID, cached);
+        const res = await pollAuditLog({
+            fetchPage: server.fetchPage,
+            watermark: null,
+            cacheMark: newestMark(cached),
+            maxPages: 5
+        });
+        await db.saveEntries(GID, res.fetched);
+        await recordGap(db, GID, res.gap, 'catch-up');
+        for (let i = 0; i < 50; i++) await cycle(db, server, NOW + i * 60_000);
+        const have = new Set(db.all(GID).map((e) => e.id));
+        expect(all.filter((e) => !have.has(e.id)).map((e) => e.id)).toEqual([]);
     });
 });

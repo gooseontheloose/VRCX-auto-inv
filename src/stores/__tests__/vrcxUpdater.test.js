@@ -250,3 +250,24 @@ describe('fork release asset', () => {
         expect(globalThis.AppApi.DownloadUpdate).not.toHaveBeenCalled();
     });
 });
+
+describe('update file on disk (Dotnet/Update.cs)', () => {
+    // %AppData%\VRCX is shared with upstream VRCX and older fork builds, which
+    // run any "update.exe" there unchecked. The download and the install on
+    // start must use the same fork-only file names.
+    test('download, pending check and install use the fork-only file names', async () => {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const src = fs.readFileSync(path.resolve(__dirname, '../../../Dotnet/Update.cs'), 'utf8');
+        expect(src).toContain('"PAWInviter_update.exe"');
+        expect(src).toContain('"PAWInviter_tempDownload"');
+        expect(src).toContain('"PAWInviter_Setup"');
+        expect(src).not.toMatch(/"update\.exe"|"tempDownload"|"VRCX_Setup(\.exe)?"/);
+        // the only writer and the readers all go through UpdateExecutable
+        expect(src).toMatch(/File\.Move\(TempDownload, UpdateExecutable\)/);
+        expect(src).toMatch(/File\.Move\(UpdateExecutable, VrcxSetupExecutable\)/);
+        expect(src).toMatch(/FileVersionInfo\.GetVersionInfo\(UpdateExecutable\)/);
+        const cef = fs.readFileSync(path.resolve(__dirname, '../../../Dotnet/AppApi/Cef/AppApiCef.cs'), 'utf8');
+        expect(cef).toMatch(/CheckForUpdateExe\(\)\s*\{[^}]*Update\.IsUpdateForThisInstall\(\)/);
+    });
+});
