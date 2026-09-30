@@ -88,4 +88,32 @@ describe('pollAuditLog', () => {
         expect(res.newEntries.map((e) => e.id)).toEqual(['gaud_b']);
         expect(res.watermark).toEqual({ at, ids: ['gaud_a', 'gaud_b'] });
     });
+
+    test('truncation reports the unfetched window as a gap', async () => {
+        const all = entries(1000);
+        const wm = advanceWatermark(all.slice(900), null);
+        const res = await pollAuditLog({ fetchPage: pager(all), watermark: wm, maxPages: 2 });
+        expect(res.gap).toEqual({ after: all[900].created_at, before: all[199].created_at });
+    });
+
+    test('first run with a cache pages back to the newest cached entry, posting nothing', async () => {
+        const all = entries(450);
+        const cacheMark = advanceWatermark(all.slice(250), null);
+        const fetchPage = pager(all);
+        const res = await pollAuditLog({ fetchPage, watermark: null, cacheMark });
+        expect(fetchPage).toHaveBeenCalledTimes(3);
+        expect(res.fetched.map((e) => e.id)).toEqual(expect.arrayContaining(all.slice(0, 250).map((e) => e.id)));
+        expect(res.newEntries).toEqual([]);
+        expect(res.firstRun).toBe(true);
+        expect(res.gap).toBeNull();
+        expect(res.watermark.at).toBe(all[0].created_at);
+    });
+
+    test('first run that cannot reach the cache returns the gap to queue', async () => {
+        const all = entries(1000);
+        const cacheMark = advanceWatermark(all.slice(800), null);
+        const res = await pollAuditLog({ fetchPage: pager(all), watermark: null, cacheMark, maxPages: 5 });
+        expect(res.truncated).toBe(true);
+        expect(res.gap).toEqual({ after: all[800].created_at, before: all[499].created_at });
+    });
 });

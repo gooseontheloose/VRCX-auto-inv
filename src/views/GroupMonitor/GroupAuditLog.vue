@@ -1,5 +1,5 @@
 ﻿<script setup>
-    import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+    import { ref, computed, watch, onMounted, onActivated, onBeforeUnmount, nextTick } from 'vue';
     import { useRoute } from 'vue-router';
     import * as echarts from 'echarts';
     import dayjs from 'dayjs';
@@ -60,6 +60,8 @@
         SelectValue
     } from '@/components/ui/select';
     import { useGroupMonitorData } from './useGroupMonitorData';
+    import { attributeVoteKicks, dayOfWeek, localMonth, membersOverTimeFrom, topWorldsFrom } from './monitorStats';
+    import { kickEntries } from '../../services/groupMonitor/payloads';
 
     // ── Shared singleton state from composable ────────────────────────────────
     const {
@@ -103,6 +105,9 @@
         loadVoteKickHistory,
         loadLocationHistory,
         refreshAll,
+        onPageActivated,
+        lastViewedGroupId,
+        nowTick,
         openProfileById,
         openProfileByName,
         startPolling,
@@ -197,7 +202,7 @@
     // ── helpers ───────────────────────────────────────────────────────────────
     function cutoffDate(days) {
         if (!days) return null;
-        return dayjs().subtract(days, 'day').toISOString();
+        return dayjs(nowTick.value).subtract(days, 'day').toISOString();
     }
 
     function fmtDate(iso) {
@@ -345,37 +350,7 @@
     const expandedInviter = ref(null);
 
     // ── members over time ─────────────────────────────────────────────────────
-    const membersOverTime = computed(() => {
-        const joinTypes  = new Set(['group.member.join', 'group.invite.accept']);
-        const leaveTypes = new Set(['group.member.leave', 'group.member.remove', 'group.user.ban']);
-        const relevant   = auditLogs.value.filter((r) => joinTypes.has(r.eventType) || leaveTypes.has(r.eventType));
-        if (!relevant.length) return { dates: [], joins: [], leaves: [], net: [] };
-
-        const dayMap = new Map();
-        for (const r of [...relevant].sort((a, b) => (a.created_at < b.created_at ? -1 : 1))) {
-            const day = r.created_at.slice(0, 10);
-            if (!dayMap.has(day)) dayMap.set(day, { joins: 0, leaves: 0 });
-            if (joinTypes.has(r.eventType)) dayMap.get(day).joins++;
-            else dayMap.get(day).leaves++;
-        }
-
-        const keys = [...dayMap.keys()].sort();
-        if (!keys.length) return { dates: [], joins: [], leaves: [], net: [] };
-
-        const allDays = [];
-        const cur = new Date(keys[0]);
-        const last = new Date(keys[keys.length - 1]);
-        while (cur <= last) { allDays.push(cur.toISOString().slice(0, 10)); cur.setDate(cur.getDate() + 1); }
-
-        let running = 0;
-        const joins = [], leaves = [], net = [];
-        for (const day of allDays) {
-            const { joins: j = 0, leaves: l = 0 } = dayMap.get(day) ?? {};
-            running += j - l;
-            joins.push(j); leaves.push(l); net.push(Math.max(0, running));
-        }
-        return { dates: allDays, joins, leaves, net };
-    });
+    const membersOverTime = computed(() => membersOverTimeFrom(auditLogs.value));
 
     // ── invite analytics summary ──────────────────────────────────────────────
     const inviteStats = computed(() => {
@@ -388,7 +363,7 @@
 
         const byMonth = new Map();
         for (const r of auditLogs.value.filter((r) => r.eventType === 'group.invite.create' || r.eventType === 'group.invite.send')) {
-            const m = r.created_at.slice(0, 7);
+            const m = localMonth(r.created_at);
             byMonth.set(m, (byMonth.get(m) ?? 0) + 1);
         }
         const trendMonths = [...byMonth.keys()].sort();
@@ -412,9 +387,7 @@
     // ── kick / ban leaderboards ───────────────────────────────────────────────
     const kickLeaderboard = computed(() => {
         const cutoff = cutoffDate(auditDateDays.value);
-        const rows = auditLogs.value.filter((r) =>
-            r.eventType === 'group.instance.kick' && (!cutoff || r.created_at >= cutoff)
-        );
+        const rows = kickEntries(auditLogs.value).filter((r) => !cutoff || r.created_at >= cutoff);
         const map = new Map();
         for (const r of rows) {
             const actorId = r.actorId || null;
@@ -434,9 +407,7 @@
 
     const kickedLeaderboard = computed(() => {
         const cutoff = cutoffDate(auditDateDays.value);
-        const rows = auditLogs.value.filter((r) =>
-            r.eventType === 'group.instance.kick' && (!cutoff || r.created_at >= cutoff)
-        );
+        const rows = kickEntries(auditLogs.value).filter((r) => !cutoff || r.created_at >= cutoff);
         const map = new Map();
         for (const r of rows) {
             const targetId = r.targetId || null;
@@ -508,21 +479,9 @@
     });
 
     // ── vote-to-kick ──────────────────────────────────────────────────────────
-    const groupVkEvents = computed(() => {
-        if (!locationHistory.value.length || !vkEvents.value.length) return [];
-        const ranges = locationHistory.value.map((loc) => {
-            const startMs = new Date(loc.created_at).getTime();
-            const dur = (Number(loc.time) || 0) * 1000;
-            return { startMs, endMs: dur > 0 ? startMs + dur : Date.now(), worldName: loc.worldName || 'Unknown World' };
-        });
-        return vkEvents.value
-            .map((ev) => {
-                const evMs = new Date(ev.at).getTime();
-                const range = ranges.find((r) => evMs >= r.startMs && evMs <= r.endMs);
-                return range ? { ...ev, worldName: range.worldName } : null;
-            })
-            .filter(Boolean);
-    });
+    const groupVkEvents = computed(() =>
+        attributeVoteKicks(vkEvents.value, locationHistory.value, nowTick.value)
+    );
 
     const filteredVkEvents = computed(() => {
         let evs = groupVkEvents.value;
@@ -598,24 +557,12 @@
     });
 
     // ── worlds ────────────────────────────────────────────────────────────────
-    const topWorlds = computed(() => {
-        const map = new Map();
-        for (const row of locationHistory.value) {
-            const name = row.worldName || 'Unknown World';
-            if (!map.has(name)) map.set(name, { name, visits: 0, totalTime: 0 });
-            const e = map.get(name);
-            e.visits++;
-            e.totalTime += Number(row.time) || 0;
-        }
-        return sortRows(
-            Array.from(map.values()).map((e) => ({ ...e, avgTime: e.visits > 0 ? Math.round(e.totalTime / e.visits) : 0 })),
-            sortWorldCol.value,
-            sortWorldDir.value
-        );
-    });
+    const topWorlds = computed(() =>
+        sortRows(topWorldsFrom(locationHistory.value), sortWorldCol.value, sortWorldDir.value)
+    );
 
     // ── stat cards ────────────────────────────────────────────────────────────
-    const totalRemovals = computed(() => auditLogs.value.filter((r) => r.eventType === 'group.instance.kick').length);
+    const totalRemovals = computed(() => kickEntries(auditLogs.value).length);
     const totalBans = computed(() => auditLogs.value.filter((r) => r.eventType === 'group.user.ban').length);
 
     // ── charts ────────────────────────────────────────────────────────────────
@@ -762,12 +709,14 @@
     onMounted(async () => {
         loadVoteKickHistory();
         window.addEventListener('resize', onResize);
-        const _savedGroupId = localStorage.getItem('gm-group-id');
+        const _savedGroupId = lastViewedGroupId();
         const _startGroupId = (_savedGroupId && allGroups.value.some((g) => g.id === _savedGroupId)) ? _savedGroupId : allGroups.value[0]?.id;
         // Only fetch if data isn't already loaded from another GroupMonitor page this session
         if (_startGroupId && _startGroupId !== selectedGroupId.value) handleGroupChange(_startGroupId);
         startPolling();
     });
+
+    onActivated(() => onPageActivated());
 
     onBeforeUnmount(() => {
         stopPolling();

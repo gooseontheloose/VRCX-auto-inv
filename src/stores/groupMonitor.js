@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue';
+import { computed, getCurrentScope, onScopeDispose, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 import * as workerTimers from 'worker-timers';
 
@@ -7,6 +7,7 @@ import {
     auditDbLoadMeta,
     auditDbSaveEntries
 } from '../services/auditLogDb';
+import { isHistoryComplete, newestMark } from '../services/groupMonitor/auditGaps';
 import {
     pollAuditLog,
     AUDIT_PAGE_SIZE
@@ -18,6 +19,12 @@ import {
     ownLeaveTimesFromVisits
 } from '../services/groupMonitor/crashDetector';
 import { createDeliveryQueue } from '../services/groupMonitor/deliveryQueue';
+import {
+    drainGaps,
+    indexedAuditDb,
+    recordGap,
+    runRepairScan
+} from '../services/groupMonitor/gapBackfill';
 import {
     isValidDiscordWebhookUrl,
     postDiscordWebhook
@@ -38,6 +45,7 @@ import {
 import monitorStorage from '../services/groupMonitor/storage';
 import { request } from '../services/request';
 import sqliteService from '../services/sqlite';
+import { onVrchatRateLimit } from '../services/vrchatRateLimit';
 import { watchState } from '../services/watchState';
 import { useGroupStore } from './group';
 import { useLocationStore } from './location';
@@ -49,6 +57,15 @@ export const TICK_MS = 5_000;
 export const CYCLE_MS = 60_000;
 /** Max per-event posts per webhook per poll (catch-up included); the rest is summarised. */
 export const CATCH_UP_CAP = 20;
+/**
+ * Gap backfill requests per cycle across all groups (one cycle a minute), on
+ * top of the regular poll. Kept low: VRChat's rate limit is shared with the
+ * rest of VRCX and AIRI.
+ */
+export const BACKFILL_PAGES_PER_CYCLE = 3;
+/** Backfill pause after VRChat answers 429 anywhere; doubles per strike. */
+export const BACKFILL_PAUSE_MS = 2 * 60_000;
+const BACKFILL_PAUSE_MAX_MS = 30 * 60_000;
 const LOG_LIMIT = 50;
 const RECENT_CRASH_LIMIT = 20;
 const GROUP_ID_RE = /^grp_[0-9a-f-]{36}$/i;
@@ -57,6 +74,7 @@ const AUDIT_PERM = 'group-audit-view';
 const LEGACY_WEBHOOKS_KEY = 'gm-webhooks-v1';
 const LEGACY_LASTSENT_KEY = 'gm-webhook-lastsent';
 const LEGACY_MIGRATED_KEY = 'gm-webhooks-v1:migrated-to';
+const KNOWN_GROUPS_KEY = 'gm-group-audit-data-ids';
 
 function configKey(userId) {
     return `gm:${userId}:config`;
@@ -148,6 +166,12 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
     const recentCrashes = ref([]);
     const settingsLoaded = ref(false);
 
+    /** Groups this client keeps audit history for (shared by both accounts). */
+    const knownGroupIds = ref(new Set());
+    const backfillPausedUntil = ref(0);
+    let backfillStrikes = 0;
+    const repairScanned = new Set();
+
     let generation = 0;
     let timerHandle = null;
     let nextCycleAt = 0;
@@ -198,11 +222,28 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         return auditPermission(groupId) === 'yes';
     }
 
+    /**
+     * Groups nobody configured are still polled for an account that can read
+     * their audit log, once this client keeps history for them (the group was
+     * opened in Group Monitor on either account). An explicit setting wins.
+     */
+    function implicitlyMonitored(groupId) {
+        return (
+            knownGroupIds.value.has(groupId) &&
+            auditPermission(groupId) === 'yes'
+        );
+    }
+
     function getGroupSettings(groupId) {
+        /** @type {Partial<ReturnType<typeof defaultGroupSettings>>} */
+        const stored = groupSettings.value[groupId] ?? {};
         return {
             ...defaultGroupSettings(),
-            monitored: false,
-            ...(groupSettings.value[groupId] ?? {})
+            ...stored,
+            monitored:
+                typeof stored.monitored === 'boolean'
+                    ? stored.monitored
+                    : implicitlyMonitored(groupId)
         };
     }
 
@@ -211,11 +252,30 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         const ids = new Set();
         for (const [gid, s] of Object.entries(groupSettings.value))
             if (s.monitored) ids.add(gid);
+        for (const gid of knownGroupIds.value) {
+            const s = groupSettings.value[gid];
+            if (typeof s?.monitored !== 'boolean' && implicitlyMonitored(gid))
+                ids.add(gid);
+        }
         for (const w of webhooks.value)
             if (w.enabled && w.groupId && w.type === 'audit-events')
                 ids.add(w.groupId);
         return [...ids].filter((gid) => GROUP_ID_RE.test(gid));
     });
+
+    function loadKnownGroups() {
+        const ids = readLocalJson(KNOWN_GROUPS_KEY);
+        knownGroupIds.value = new Set(
+            Array.isArray(ids) ? ids.filter((g) => GROUP_ID_RE.test(g)) : []
+        );
+    }
+
+    /** Called by the pages when a group is opened in Group Monitor. */
+    function noteViewedGroup(groupId) {
+        if (!GROUP_ID_RE.test(groupId || '') || knownGroupIds.value.has(groupId))
+            return;
+        knownGroupIds.value = new Set([...knownGroupIds.value, groupId]);
+    }
 
     function isPollingGroup(groupId) {
         return (
@@ -333,11 +393,13 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
 
     /**
      * Pre-2.2 builds kept one global webhook list (paw_settings gm-webhooks-v1)
-     * plus localStorage flags. The first account to log in adopts it once.
+     * plus localStorage flags. Every account adopts the monitoring settings
+     * (viewed group, crash group) on its own first login; the webhooks go to
+     * the first account only, so two accounts never post the same events.
      */
     async function migrateLegacy(userId) {
         const migratedTo = await monitorStorage.getKv(LEGACY_MIGRATED_KEY);
-        if (migratedTo) return null;
+        const takeWebhooks = !migratedTo;
         let legacy = await monitorStorage.getKv(LEGACY_WEBHOOKS_KEY);
         if (!Array.isArray(legacy)) legacy = readLocalJson(LEGACY_WEBHOOKS_KEY);
         const legacyLastSent =
@@ -350,7 +412,9 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         const crashGroup = readLocal('gm-monitored-group') || viewedGroup;
         const legacyCrash = readLocal('gm-monitor-crash') === '1';
         if (!Array.isArray(legacy) && !crashGroup) return null;
-        const hooks = (Array.isArray(legacy) ? legacy : []).map((w) =>
+        const hooks = (
+            takeWebhooks && Array.isArray(legacy) ? legacy : []
+        ).map((w) =>
             normaliseWebhook(
                 w,
                 w?.type === 'crash-alert'
@@ -365,9 +429,10 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                 ...defaultGroupSettings(),
                 crashEnabled: legacyCrash
             };
-        await monitorStorage.setKv(LEGACY_MIGRATED_KEY, userId);
+        if (takeWebhooks)
+            await monitorStorage.setKv(LEGACY_MIGRATED_KEY, userId);
         console.log(
-            `[GroupMonitor] migrated ${hooks.length} legacy webhook(s) to account ${userId}`
+            `[GroupMonitor] migrated legacy monitoring settings and ${hooks.length} webhook(s) to account ${userId}`
         );
         return {
             config: {
@@ -378,7 +443,9 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             },
             runtime: {
                 lastSent:
-                    typeof legacyLastSent === 'object' ? legacyLastSent : {}
+                    takeWebhooks && typeof legacyLastSent === 'object'
+                        ? legacyLastSent
+                        : {}
             }
         };
     }
@@ -442,6 +509,9 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         lastCycleAt.value = 0;
         settingsLoaded.value = false;
         catchUpDone.clear();
+        repairScanned.clear();
+        backfillPausedUntil.value = 0;
+        backfillStrikes = 0;
         nextCycleAt = 0;
         cycling = null;
     }
@@ -461,6 +531,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         serviceState.value = 'starting';
         try {
             await monitorStorage.init();
+            loadKnownGroups();
             const s = await loadSettings(userId);
             if (gen !== generation) return;
             enabled.value = s.enabled;
@@ -561,6 +632,8 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                     if (gen !== generation) return;
                     await pollGroup(gid, gen);
                 }
+                if (gen !== generation) return;
+                await backfillGaps(gen);
                 for (const [gid, s] of Object.entries(groupSettings.value)) {
                     if (gen !== generation) return;
                     if (s.crashEnabled) await checkCrashes(gid, gen);
@@ -619,11 +692,27 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         }
         const catchUp = !catchUpDone.has(groupId);
         try {
+            const watermark = watermarks.value[groupId] ?? null;
+            // No watermark on this account yet: page back to the newest
+            // cached entry instead of trusting page 0 to cover the downtime.
+            const cacheMark = watermark?.at
+                ? null
+                : newestMark(
+                      await indexedAuditDb.loadNewest(groupId).catch(() => [])
+                  );
             const res = await pollAuditLog({
                 fetchPage: (offset) => fetchAuditPage(groupId, offset),
-                watermark: watermarks.value[groupId] ?? null
+                watermark,
+                cacheMark
             });
             if (gen !== generation) return;
+            if (res.gap) {
+                // Queue what could not be fetched before the watermark moves
+                // past it. If that fails this throws: the old watermark stays
+                // and the next cycle catches up again.
+                await recordGap(indexedAuditDb, groupId, res.gap, 'catch-up');
+                if (gen !== generation) return;
+            }
             catchUpDone.add(groupId);
             watermarks.value = {
                 ...watermarks.value,
@@ -636,20 +725,12 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                         err
                     )
                 );
-                for (const cb of listeners) {
-                    try {
-                        cb(groupId, res.fetched, res.totalCount);
-                    } catch (err) {
-                        console.error(
-                            '[GroupMonitor] audit listener failed:',
-                            err
-                        );
-                    }
-                }
+                notifyAuditListeners(groupId, res.fetched, res.totalCount);
             }
             pollStatus.value = {
                 ...pollStatus.value,
                 [groupId]: {
+                    ...(pollStatus.value[groupId] ?? {}),
                     at: Date.now(),
                     ok: true,
                     error: null,
@@ -681,6 +762,94 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                 }
             };
         }
+    }
+
+    // ── gap backfill ─────────────────────────────────────────────────────────
+    function backfillPaused() {
+        return Date.now() < backfillPausedUntil.value;
+    }
+
+    function pauseBackfill() {
+        backfillStrikes++;
+        const wait = Math.min(
+            BACKFILL_PAUSE_MAX_MS,
+            BACKFILL_PAUSE_MS * 2 ** (backfillStrikes - 1)
+        );
+        backfillPausedUntil.value = Date.now() + wait;
+    }
+
+    async function fetchAuditWindow(groupId, params) {
+        const data = await request(`groups/${groupId}/auditLogs`, {
+            method: 'GET',
+            params: { n: AUDIT_PAGE_SIZE, ...params },
+            silentErrors: true
+        });
+        return Array.isArray(data?.results)
+            ? data.results
+            : Array.isArray(data)
+              ? data
+              : [];
+    }
+
+    /**
+     * Fills queued history gaps of the polled groups, a few requests per
+     * cycle. Backs off whenever VRChat rate-limits any request.
+     */
+    async function backfillGaps(gen) {
+        if (backfillPaused()) return;
+        let budget = BACKFILL_PAGES_PER_CYCLE;
+        for (const gid of polledGroupIds.value) {
+            if (gen !== generation || budget <= 0 || backfillPaused()) return;
+            if (auditPermission(gid) === 'no') continue;
+            try {
+                if (!repairScanned.has(gid)) {
+                    repairScanned.add(gid);
+                    await runRepairScan({ db: indexedAuditDb, groupId: gid });
+                    if (gen !== generation) return;
+                }
+                const res = await drainGaps({
+                    db: indexedAuditDb,
+                    groupId: gid,
+                    fetchWindow: (params) => fetchAuditWindow(gid, params),
+                    budget,
+                    isPaused: backfillPaused
+                });
+                if (gen !== generation) return;
+                budget -= res.requests;
+                if (res.requests && !res.error) backfillStrikes = 0;
+                if (res.fetched.length)
+                    notifyAuditListeners(gid, res.fetched, null);
+                pollStatus.value = {
+                    ...pollStatus.value,
+                    [gid]: {
+                        ...(pollStatus.value[gid] ?? {}),
+                        gapsRemaining: res.remaining
+                    }
+                };
+            } catch (err) {
+                console.warn(
+                    `[GroupMonitor] audit backfill failed for ${gid}:`,
+                    err
+                );
+            }
+        }
+    }
+
+    function notifyAuditListeners(groupId, entries, totalCount) {
+        for (const cb of listeners) {
+            try {
+                cb(groupId, entries, totalCount);
+            } catch (err) {
+                console.error('[GroupMonitor] audit listener failed:', err);
+            }
+        }
+    }
+
+    if (getCurrentScope()) {
+        const offRateLimit = onVrchatRateLimit(() => {
+            if (activeUserId.value) pauseBackfill();
+        });
+        onScopeDispose(offRateLimit);
     }
 
     async function enqueueAuditEvents(
@@ -892,7 +1061,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             now
         );
         const meta = await auditDbLoadMeta(wh.groupId).catch(() => null);
-        if (payload && !meta?.fullyLoaded) {
+        if (payload && !isHistoryComplete(meta)) {
             payload.embeds[0].footer.text += ` · partial history (${auditEntries.length} entries) — open Group Monitor once to load all`;
         }
         return { payload };
@@ -1150,6 +1319,9 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
         retryDead,
         clearDead,
         onAuditEntries,
+        noteViewedGroup,
+        knownGroupIds,
+        backfillPausedUntil,
         // exposed for tests / diagnostics
         tick,
         runCycle,

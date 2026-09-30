@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
     request: vi.fn(),
     sqlExecute: vi.fn(async () => {}),
     idb: new Map(),
+    meta: new Map(),
     storage: null,
     intervals: new Map(),
     nextTimer: 1,
@@ -43,8 +44,20 @@ vi.mock('../../services/auditLogDb', () => ({
         const ids = new Set(cur.map((e) => e.id));
         mocks.idb.set(gid, [...entries.filter((e) => !ids.has(e.id)), ...cur]);
     }),
-    auditDbLoadMeta: vi.fn(async () => ({ fullyLoaded: true })),
-    auditDbSaveMeta: vi.fn(async () => {}),
+    auditDbLoadNewest: vi.fn(async (gid) => {
+        const rows = mocks.idb.get(gid) ?? [];
+        const max = rows.reduce((m, e) => (e.created_at > m ? e.created_at : m), '');
+        return rows.filter((e) => e.created_at === max);
+    }),
+    auditDbLoadMeta: vi.fn(async (gid) => mocks.meta.get(gid) ?? null),
+    auditDbUpdateMeta: vi.fn(async (gid, fn) => {
+        const next = fn(mocks.meta.get(gid) ?? null);
+        if (next) mocks.meta.set(gid, { ...next, groupId: gid });
+        return mocks.meta.get(gid) ?? null;
+    }),
+    auditDbSaveMeta: vi.fn(async (gid, meta) => {
+        mocks.meta.set(gid, { ...(mocks.meta.get(gid) ?? {}), ...meta });
+    }),
     auditDbMigrateFromLocalStorage: vi.fn(async () => {})
 }));
 
@@ -80,7 +93,9 @@ vi.mock('../location', () => ({ useLocationStore: () => fakes.location }));
 
 import { createMemoryMonitorStorage } from '../../services/groupMonitor/memoryStorage';
 import { watchState } from '../../services/watchState';
-import { CATCH_UP_CAP, useGroupMonitorStore } from '../groupMonitor';
+import { makeGap } from '../../services/groupMonitor/auditGaps';
+import { notifyVrchatRateLimit } from '../../services/vrchatRateLimit';
+import { BACKFILL_PAGES_PER_CYCLE, CATCH_UP_CAP, useGroupMonitorStore } from '../groupMonitor';
 
 const GROUP_A = 'grp_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const GROUP_B = 'grp_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -172,13 +187,20 @@ beforeEach(() => {
     mocks.storage = createMemoryMonitorStorage(backing);
     mocks.intervals.clear();
     mocks.idb.clear();
+    mocks.meta.clear();
     auditLog = [];
     mocks.request.mockReset();
     mocks.request.mockImplementation(async (endpoint, { params }) => {
         if (!/^groups\/grp_[\w-]+\/auditLogs$/.test(endpoint))
             throw new Error(`unexpected ${endpoint}`);
+        let rows = auditLog;
+        if (params.endDate)
+            rows = rows.filter((e) => Date.parse(e.created_at) < Date.parse(params.endDate));
+        if (params.startDate)
+            rows = rows.filter((e) => Date.parse(e.created_at) >= Date.parse(params.startDate));
+        const offset = params.offset ?? 0;
         return {
-            results: auditLog.slice(params.offset, params.offset + params.n),
+            results: rows.slice(offset, offset + params.n),
             totalCount: auditLog.length
         };
     });
@@ -824,5 +846,126 @@ describe('review fixes', () => {
         await store.updateWebhook('wh-audit', { enabled: false });
         vi.restoreAllMocks();
         expect(store.queueStats.pending).toBe(0);
+    });
+});
+
+describe('gap-aware catch-up and backfill', () => {
+    const windowCalls = () =>
+        mocks.request.mock.calls.filter(([, o]) => o.params.endDate);
+
+    async function cycles(n, from = Date.now()) {
+        const spy = vi.spyOn(Date, 'now');
+        for (let i = 1; i <= n; i++) {
+            spy.mockReturnValue(from + i * 61_000);
+            await fireTimers();
+        }
+        spy.mockRestore();
+        return from + n * 61_000;
+    }
+
+    test('downtime longer than the catch-up budget is queued and backfilled, never skipped', async () => {
+        await seedAccount('usr_a', [auditHook()]);
+        addKicks(1, 50);
+        freshApp();
+        await login('usr_a');
+        await logout();
+
+        addKicks(51, 1550); // 1,500 while VRCX was closed: more than 5 pages
+        const store = freshApp();
+        await login('usr_a');
+        await flush(20);
+        // the window between the watermark and the 5 fetched pages is queued
+        expect(mocks.meta.get(GROUP_A).gaps).toHaveLength(1);
+        expect(mocks.meta.get(GROUP_A).gaps[0].after).toBe(kick(50).created_at);
+
+        await cycles(6);
+        expect(mocks.meta.get(GROUP_A).gaps).toEqual([]);
+        const cached = new Set((mocks.idb.get(GROUP_A) ?? []).map((e) => e.id));
+        for (let i = 1; i <= 1550; i++) expect(cached.has(kick(i).id)).toBe(true);
+        // per-event posts stay capped with one summary; backfill posts nothing
+        expect(discordPosts()).toHaveLength(CATCH_UP_CAP + 1);
+        expect(store.pollStatus[GROUP_A].gapsRemaining).toBe(0);
+        // budget: never more than BACKFILL_PAGES_PER_CYCLE window requests per cycle
+        expect(windowCalls().length).toBeLessThanOrEqual(7 * BACKFILL_PAGES_PER_CYCLE);
+    });
+
+    test('an account without a watermark pages back to the cached entries instead of trusting page 0', async () => {
+        addKicks(1, 100);
+        mocks.idb.set(GROUP_A, [...auditLog]);
+        await seedAccount('usr_b', [auditHook()]);
+        addKicks(101, 350);
+        freshApp();
+        await login('usr_b');
+        await flush(20);
+        const cached = new Set(mocks.idb.get(GROUP_A).map((e) => e.id));
+        for (let i = 101; i <= 350; i++) expect(cached.has(kick(i).id)).toBe(true);
+        expect(mocks.meta.get(GROUP_A)?.gaps ?? []).toEqual([]);
+        expect(discordPosts()).toEqual([]); // first run posts nothing
+    });
+
+    test('a VRChat 429 anywhere pauses the backfill, which resumes afterwards', async () => {
+        addKicks(1, 400);
+        await seedAccount('usr_a', []);
+        mocks.meta.set(GROUP_A, {
+            gaps: [makeGap({ after: kick(1).created_at, before: kick(300).created_at }, 'repair')],
+            repairScanVersion: 1
+        });
+        freshApp();
+        await login('usr_a');
+        await flush(20);
+        const before = windowCalls().length;
+        expect(before).toBeGreaterThan(0);
+
+        notifyVrchatRateLimit('users/usr_x'); // e.g. AIRI hit the limit
+        let t = await cycles(1);
+        expect(windowCalls().length).toBe(before);
+        t = await cycles(3, t); // pause is 2 minutes
+        expect(windowCalls().length).toBeGreaterThan(before);
+    });
+});
+
+describe('monitoring per account', () => {
+    test('legacy settings reach every account; webhooks only the first', async () => {
+        localStorage.setItem('gm-group-id', GROUP_A);
+        await mocks.storage.setKv('gm-webhooks-v1', [
+            { id: 'wh-old', name: 'Old', url: HOOK, type: 'kick-board', enabled: true, intervalMinutes: 60 }
+        ]);
+        const store = freshApp();
+        await login('usr_a');
+        expect(store.webhooks.map((w) => w.id)).toEqual(['wh-old']);
+        expect(store.polledGroupIds).toEqual([GROUP_A]);
+        await logout();
+
+        mocks.request.mockClear();
+        await login('usr_b');
+        localStorage.removeItem('gm-group-id');
+        expect(store.webhooks).toEqual([]);
+        expect(store.getGroupSettings(GROUP_A).monitored).toBe(true);
+        expect(store.polledGroupIds).toEqual([GROUP_A]);
+        expect(mocks.request).toHaveBeenCalledWith(`groups/${GROUP_A}/auditLogs`, expect.anything());
+    });
+
+    test('groups with cached history are polled for any account that can read them', async () => {
+        localStorage.setItem('gm-group-audit-data-ids', JSON.stringify([GROUP_A, GROUP_B]));
+        const store = freshApp();
+        await login('usr_c', [
+            adminGroup(GROUP_A, 'Alpha'),
+            { id: GROUP_B, name: 'Bravo', myMember: { permissions: ['group-members-view'] } }
+        ]);
+        localStorage.removeItem('gm-group-audit-data-ids');
+        expect(store.polledGroupIds).toEqual([GROUP_A]);
+        expect(store.isPollingGroup(GROUP_A)).toBe(true);
+
+        // an explicit "off" wins over the default
+        await store.setGroupSettings(GROUP_A, { monitored: false });
+        expect(store.polledGroupIds).toEqual([]);
+    });
+
+    test('a group opened in Group Monitor is picked up without a restart', async () => {
+        const store = freshApp();
+        await login('usr_d', [adminGroup(GROUP_B, 'Bravo')]);
+        expect(store.polledGroupIds).toEqual([]);
+        store.noteViewedGroup(GROUP_B);
+        expect(store.polledGroupIds).toEqual([GROUP_B]);
     });
 });

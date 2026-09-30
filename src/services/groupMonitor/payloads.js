@@ -35,7 +35,10 @@ export const AUDIT_EVENT_CATEGORIES = Object.freeze({
         'group.join.request.accept',
         'group.join.request.create',
         'group.request.create',
-        'group.join.request.reject'
+        'group.join.request.reject',
+        'group.request.accept',
+        'group.request.reject',
+        'group.request.block'
     ],
     role: [
         'group.member.role.assign',
@@ -62,6 +65,9 @@ const EVENT_LABELS = {
     'group.join.request.create': 'Join Requested',
     'group.request.create': 'Join Requested',
     'group.join.request.reject': 'Join Request Rejected',
+    'group.request.accept': 'Join Request Accepted',
+    'group.request.reject': 'Join Request Rejected',
+    'group.request.block': 'Join Request Blocked',
     'group.member.role.assign': 'Role Assigned',
     'group.member.role.remove': 'Role Removed',
     'group.member.role.unassign': 'Role Unassigned',
@@ -107,7 +113,7 @@ function parseTargetFromDescription(desc) {
     if (!desc) return null;
     let m = desc.match(/has issued an instance kick for (.+?)\.?\s*$/i);
     if (m) return m[1].trim();
-    m = desc.match(/^User (.+?) has been /i);
+    m = desc.match(/^User (.+?) (?:has been|was) /i);
     if (m) return m[1].trim();
     m = desc.match(/\bfor (.+?)\.?\s*$/i);
     if (m) return m[1].trim();
@@ -138,11 +144,38 @@ export function targetName(e) {
     );
 }
 
+// ── kicks ────────────────────────────────────────────────────────────────────
+const BAN_REMOVE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * Audit entries that are kicks: instance kicks, and removals from the group
+ * (group.member.remove, "User X was removed from the group by Y") unless the
+ * user removed themselves or the removal is part of a ban of the same user.
+ * @param {any[]} entries
+ */
+export function kickEntries(entries) {
+    const banTimes = new Map();
+    for (const e of entries) {
+        if (e.eventType !== 'group.user.ban' || !e.targetId) continue;
+        if (!banTimes.has(e.targetId)) banTimes.set(e.targetId, []);
+        banTimes.get(e.targetId).push(Date.parse(e.created_at));
+    }
+    return entries.filter((e) => {
+        if (e.eventType === 'group.instance.kick') return true;
+        if (e.eventType !== 'group.member.remove') return false;
+        if (e.actorId && e.actorId === e.targetId) return false;
+        const t = Date.parse(e.created_at);
+        return !(banTimes.get(e.targetId) ?? []).some(
+            (b) => Math.abs(b - t) <= BAN_REMOVE_WINDOW_MS
+        );
+    });
+}
+
 // ── leaderboards ──────────────────────────────────────────────────────────────
 function countBy(entries, eventType, keyFn, nameFn) {
     const map = new Map();
     for (const e of entries) {
-        if (e.eventType !== eventType) continue;
+        if (eventType && e.eventType !== eventType) continue;
         const { key, name } = { key: keyFn(e), name: nameFn(e) };
         if (!map.has(key)) map.set(key, { name, count: 0 });
         const row = map.get(key);
@@ -307,9 +340,9 @@ export function leaderboardRows(type, data) {
     const entries = data.auditEntries ?? [];
     switch (type) {
         case 'kick-board':
-            return actorBoard(entries, 'group.instance.kick');
+            return actorBoard(kickEntries(entries), null);
         case 'most-kicked':
-            return targetBoard(entries, 'group.instance.kick');
+            return targetBoard(kickEntries(entries), null);
         case 'ban-board':
             return actorBoard(entries, 'group.user.ban');
         case 'most-banned':

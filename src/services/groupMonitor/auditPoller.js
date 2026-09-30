@@ -36,31 +36,39 @@ export function advanceWatermark(entries, prev) {
 }
 
 /**
+ * Pages back from the newest entry until it reaches `watermark` (the last
+ * entry this account reported) or, when this account has no watermark yet,
+ * `cacheMark` (the newest cached entry), bounded by maxPages. When it runs out
+ * of pages first, `gap` is the window it could not fetch; the caller must
+ * queue it for backfill before moving the watermark past it.
  * @param {object} opts
  * @param {(offset: number) => Promise<{entries: any[], totalCount?: number}>} opts.fetchPage
  * @param {Watermark|null} opts.watermark
+ * @param {Watermark|null} [opts.cacheMark]
  * @param {number} [opts.maxPages]
  * @param {number} [opts.pageSize]
- * @returns {Promise<{newEntries: any[], fetched: any[], watermark: Watermark|null, firstRun: boolean, truncated: boolean, totalCount: number|null}>}
+ * @returns {Promise<{newEntries: any[], fetched: any[], watermark: Watermark|null, firstRun: boolean, truncated: boolean, gap: {after: string, before: string}|null, totalCount: number|null}>}
  */
 export async function pollAuditLog({
     fetchPage,
     watermark,
+    cacheMark = null,
     maxPages = AUDIT_MAX_PAGES,
     pageSize = AUDIT_PAGE_SIZE
 }) {
     const firstRun = !watermark?.at;
+    const stopMark = firstRun ? (cacheMark?.at ? cacheMark : null) : watermark;
     const fetched = [];
     let reached = false;
     let totalCount = null;
     let exhausted = false;
-    // On the very first run we only need page 0 to establish the watermark.
-    const pages = firstRun ? 1 : maxPages;
+    // With nothing to page back to, page 0 is enough to set the watermark.
+    const pages = stopMark ? maxPages : 1;
     for (let page = 0; page < pages; page++) {
         const { entries, totalCount: tc } = await fetchPage(page * pageSize);
         if (page === 0 && Number.isFinite(tc)) totalCount = tc;
         fetched.push(...entries);
-        if (entries.some((e) => isKnown(e, watermark))) {
+        if (entries.some((e) => isKnown(e, stopMark))) {
             reached = true;
             break;
         }
@@ -73,17 +81,28 @@ export async function pollAuditLog({
     const unique = fetched.filter(
         (e) => e?.id != null && !seen.has(e.id) && seen.add(e.id)
     );
+    // Posting only starts after this account set its own watermark: a first
+    // run never floods webhooks with what the cache already had.
     const newEntries = firstRun
         ? []
         : unique
               .filter((e) => !isKnown(e, watermark))
               .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    const truncated = Boolean(stopMark) && !reached && !exhausted;
+    let gap = null;
+    if (truncated && unique.length) {
+        const oldest = unique.reduce((m, e) =>
+            e.created_at < m.created_at ? e : m
+        );
+        gap = { after: stopMark.at, before: oldest.created_at };
+    }
     return {
         newEntries,
         fetched: unique,
         watermark: advanceWatermark(unique, watermark),
         firstRun,
-        truncated: !firstRun && !reached && !exhausted,
+        truncated,
+        gap,
         totalCount
     };
 }

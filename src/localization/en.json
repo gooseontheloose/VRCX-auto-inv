@@ -1427,6 +1427,7 @@
                 "monitor_group": "Watch audit log",
                 "poll_ok": "Last poll {time} · {count} new",
                 "poll_error": "Last poll failed: {error}",
+                "gaps_pending": "Filling {count} gap(s) in the cached history in the background",
                 "crash_alerts": "Crash alerts",
                 "crash_threshold": "Min players",
                 "crash_window": "Within (s)",
