@@ -268,7 +268,6 @@ export const createColumns = ({ isPrevious, onShowUser, onShowAvatar, onShowGrou
                 onShowAvatar={onShowAvatar}
                 onShowGroup={onShowGroup}
                 onShowWorld={onShowWorld}
-                onShowUser={onShowUser}
                 onShowImage={onShowImage}
             />
         )
