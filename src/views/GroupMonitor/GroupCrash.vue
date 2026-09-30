@@ -1,5 +1,5 @@
 ﻿<script setup>
-    import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+    import { ref, computed, watch, onMounted, onActivated, onBeforeUnmount, nextTick } from 'vue';
     import { useRoute } from 'vue-router';
     import * as echarts from 'echarts';
     import dayjs from 'dayjs';
@@ -60,6 +60,11 @@
         SelectValue
     } from '@/components/ui/select';
     import { useGroupMonitorData } from './useGroupMonitorData';
+    import { attributeVoteKicks, dayOfWeek, localMonth, membersOverTimeFrom, topWorldsFrom } from './monitorStats';
+    import { kickEntries } from '../../services/groupMonitor/payloads';
+    import { useI18n } from 'vue-i18n';
+    import { useGroupMonitorStore } from '../../stores/groupMonitor';
+    import { detectCrashSessions, ownLeaveTimesFromVisits } from '../../services/groupMonitor/crashDetector';
 
     // ── Shared singleton state from composable ────────────────────────────────
     const {
@@ -103,17 +108,13 @@
         loadVoteKickHistory,
         loadLocationHistory,
         refreshAll,
+        onPageActivated,
+        lastViewedGroupId,
+        nowTick,
         openProfileById,
         openProfileByName,
         startPolling,
         stopPolling,
-        webhookConfigs,
-        webhookSendingIds,
-        webhookStatus,
-        webhookLastSent,
-        initWebhooks,
-        saveWebhookConfigs,
-        saveWebhookLastSent,
         warnLeaderboard,
         mostWarnedLeaderboard,
         groupAuditPermIds,
@@ -213,7 +214,7 @@
     // ── helpers ───────────────────────────────────────────────────────────────
     function cutoffDate(days) {
         if (!days) return null;
-        return dayjs().subtract(days, 'day').toISOString();
+        return dayjs(nowTick.value).subtract(days, 'day').toISOString();
     }
 
     function fmtDate(iso) {
@@ -361,37 +362,7 @@
     const expandedInviter = ref(null);
 
     // ── members over time ─────────────────────────────────────────────────────
-    const membersOverTime = computed(() => {
-        const joinTypes  = new Set(['group.member.join', 'group.invite.accept']);
-        const leaveTypes = new Set(['group.member.leave', 'group.member.remove', 'group.user.ban']);
-        const relevant   = auditLogs.value.filter((r) => joinTypes.has(r.eventType) || leaveTypes.has(r.eventType));
-        if (!relevant.length) return { dates: [], joins: [], leaves: [], net: [] };
-
-        const dayMap = new Map();
-        for (const r of [...relevant].sort((a, b) => (a.created_at < b.created_at ? -1 : 1))) {
-            const day = r.created_at.slice(0, 10);
-            if (!dayMap.has(day)) dayMap.set(day, { joins: 0, leaves: 0 });
-            if (joinTypes.has(r.eventType)) dayMap.get(day).joins++;
-            else dayMap.get(day).leaves++;
-        }
-
-        const keys = [...dayMap.keys()].sort();
-        if (!keys.length) return { dates: [], joins: [], leaves: [], net: [] };
-
-        const allDays = [];
-        const cur = new Date(keys[0]);
-        const last = new Date(keys[keys.length - 1]);
-        while (cur <= last) { allDays.push(cur.toISOString().slice(0, 10)); cur.setDate(cur.getDate() + 1); }
-
-        let running = 0;
-        const joins = [], leaves = [], net = [];
-        for (const day of allDays) {
-            const { joins: j = 0, leaves: l = 0 } = dayMap.get(day) ?? {};
-            running += j - l;
-            joins.push(j); leaves.push(l); net.push(Math.max(0, running));
-        }
-        return { dates: allDays, joins, leaves, net };
-    });
+    const membersOverTime = computed(() => membersOverTimeFrom(auditLogs.value));
 
     // ── invite analytics summary ──────────────────────────────────────────────
     const inviteStats = computed(() => {
@@ -404,7 +375,7 @@
 
         const byMonth = new Map();
         for (const r of auditLogs.value.filter((r) => r.eventType === 'group.invite.create' || r.eventType === 'group.invite.send')) {
-            const m = r.created_at.slice(0, 7);
+            const m = localMonth(r.created_at);
             byMonth.set(m, (byMonth.get(m) ?? 0) + 1);
         }
         const trendMonths = [...byMonth.keys()].sort();
@@ -428,9 +399,7 @@
     // ── kick / ban leaderboards ───────────────────────────────────────────────
     const kickLeaderboard = computed(() => {
         const cutoff = cutoffDate(auditDateDays.value);
-        const rows = auditLogs.value.filter((r) =>
-            r.eventType === 'group.instance.kick' && (!cutoff || r.created_at >= cutoff)
-        );
+        const rows = kickEntries(auditLogs.value).filter((r) => !cutoff || r.created_at >= cutoff);
         const map = new Map();
         for (const r of rows) {
             const actorId = r.actorId || null;
@@ -450,9 +419,7 @@
 
     const kickedLeaderboard = computed(() => {
         const cutoff = cutoffDate(auditDateDays.value);
-        const rows = auditLogs.value.filter((r) =>
-            r.eventType === 'group.instance.kick' && (!cutoff || r.created_at >= cutoff)
-        );
+        const rows = kickEntries(auditLogs.value).filter((r) => !cutoff || r.created_at >= cutoff);
         const map = new Map();
         for (const r of rows) {
             const targetId = r.targetId || null;
@@ -524,21 +491,9 @@
     });
 
     // ── vote-to-kick ──────────────────────────────────────────────────────────
-    const groupVkEvents = computed(() => {
-        if (!locationHistory.value.length || !vkEvents.value.length) return [];
-        const ranges = locationHistory.value.map((loc) => {
-            const startMs = new Date(loc.created_at).getTime();
-            const dur = (Number(loc.time) || 0) * 1000;
-            return { startMs, endMs: dur > 0 ? startMs + dur : Date.now(), worldName: loc.worldName || 'Unknown World' };
-        });
-        return vkEvents.value
-            .map((ev) => {
-                const evMs = new Date(ev.at).getTime();
-                const range = ranges.find((r) => evMs >= r.startMs && evMs <= r.endMs);
-                return range ? { ...ev, worldName: range.worldName } : null;
-            })
-            .filter(Boolean);
-    });
+    const groupVkEvents = computed(() =>
+        attributeVoteKicks(vkEvents.value, locationHistory.value, nowTick.value)
+    );
 
     const filteredVkEvents = computed(() => {
         let evs = groupVkEvents.value;
@@ -614,24 +569,12 @@
     });
 
     // ── worlds ────────────────────────────────────────────────────────────────
-    const topWorlds = computed(() => {
-        const map = new Map();
-        for (const row of locationHistory.value) {
-            const name = row.worldName || 'Unknown World';
-            if (!map.has(name)) map.set(name, { name, visits: 0, totalTime: 0 });
-            const e = map.get(name);
-            e.visits++;
-            e.totalTime += Number(row.time) || 0;
-        }
-        return sortRows(
-            Array.from(map.values()).map((e) => ({ ...e, avgTime: e.visits > 0 ? Math.round(e.totalTime / e.visits) : 0 })),
-            sortWorldCol.value,
-            sortWorldDir.value
-        );
-    });
+    const topWorlds = computed(() =>
+        sortRows(topWorldsFrom(locationHistory.value), sortWorldCol.value, sortWorldDir.value)
+    );
 
     // ── stat cards ────────────────────────────────────────────────────────────
-    const totalRemovals = computed(() => auditLogs.value.filter((r) => r.eventType === 'group.instance.kick').length);
+    const totalRemovals = computed(() => kickEntries(auditLogs.value).length);
     const totalBans = computed(() => auditLogs.value.filter((r) => r.eventType === 'group.user.ban').length);
 
     // ── charts ────────────────────────────────────────────────────────────────
@@ -682,8 +625,17 @@
     let crashChart = null;
     const recentLeaveEvents = ref([]);
     const isLoadingCrash = ref(false);
-    const crashThreshold = ref(5);
-    const crashWindowSec = ref(60);
+    const monitorStore = useGroupMonitorStore();
+    const { t } = useI18n();
+    // Persisted per group in the groupMonitor store (used by the background check too).
+    const crashThreshold = computed({
+        get: () => monitorStore.getGroupSettings(selectedGroupId.value).crashThreshold,
+        set: (v) => monitorStore.setGroupSettings(selectedGroupId.value, { crashThreshold: Number(v) })
+    });
+    const crashWindowSec = computed({
+        get: () => monitorStore.getGroupSettings(selectedGroupId.value).crashWindowSec,
+        set: (v) => monitorStore.setGroupSettings(selectedGroupId.value, { crashWindowSec: Number(v) })
+    });
 
     async function loadCrashData() {
         const groupId = selectedGroupId.value;
@@ -706,38 +658,20 @@
         }
     }
 
+    // Same detector as the background service: uses the real window, and skips
+    // the batch VRCX writes for everyone still there when you leave an instance.
     const detectedCrashes = computed(() => {
         const evs = recentLeaveEvents.value;
         if (!evs.length) return [];
-        const threshold = crashThreshold.value;
-        const windowMs = crashWindowSec.value * 1000;
-        const sessions = [];
-        let i = 0;
-        while (i < evs.length) {
-            const startMs = new Date(evs[i].at).getTime();
-            const windowEvs = [];
-            let j = i;
-            while (j < evs.length) {
-                if (startMs - new Date(evs[j].at).getTime() > windowMs) break;
-                windowEvs.push(evs[j]);
-                j++;
-            }
-            if (windowEvs.length >= threshold) {
-                const count = windowEvs.length;
-                const sev = count >= threshold * 3 ? 'high' : count >= threshold * 1.5 ? 'medium' : 'low';
-                sessions.push({
-                    startAt: evs[i].at,
-                    endAt: evs[j - 1]?.at ?? evs[i].at,
-                    count, windowSeconds: crashWindowSec.value, severity: sev,
-                    location: evs[i].location ?? '',
-                    players: windowEvs.map((e) => e.displayName).filter(Boolean)
-                });
-                i = j;
-            } else {
-                i++;
-            }
-        }
-        return sessions;
+        return detectCrashSessions(evs, {
+            groupId: selectedGroupId.value,
+            nowMs: Date.now(),
+            threshold: crashThreshold.value,
+            windowSec: crashWindowSec.value,
+            ownLeaveTimes: ownLeaveTimesFromVisits(locationHistory.value),
+            lookbackMs: Infinity,
+            settleMs: 0
+        }).reverse();
     });
 
     function renderCrashChart() {
@@ -771,259 +705,53 @@
 
     watch([crashThreshold, crashWindowSec], () => renderCrashChart());
 
-    // ── webhook service ───────────────────────────────────────────────────────
-    // webhookConfigs / webhookSendingIds / webhookStatus / webhookLastSent
-    // are module-level singletons from useGroupMonitorData (SQLite-backed).
-    const WEBHOOK_TYPE_LABELS = {
-        'kick-board': 'Top Kickers',
-        'most-kicked': 'Most Kicked',
-        'ban-board': 'Top Banners',
-        'most-banned': 'Most Banned',
-        'snitch-report': 'Top Snitches',
-        'vk-targets': 'Most Vote-Kicked',
-        'crash-alert': 'Crash Alerts',
-        'invite-board': 'Top Inviters',
-        'warn-board': 'Top Warners',
-        'most-warned': 'Most Warned'
-    };
-    const webhookNewUrl = ref('');
-    const webhookNewName = ref('');
-    const webhookNewType = ref('kick-board');
-    const webhookNewColor = ref('#5865f2');
-    const webhookNewInterval = ref(0);
-    let webhookSchedulerInterval = null;
+    // This page opens on the crash tab, so the activeTab watcher never fires:
+    // load on open, on group change and when KeepAlive brings the page back.
+    watch(selectedGroupId, (id) => { if (id) loadCrashData(); }, { immediate: true });
 
-    const monitoredGroupId = ref(localStorage.getItem('gm-monitored-group') ?? '');
-    const monitorCrashEnabled = ref(localStorage.getItem('gm-monitor-crash') === '1');
-    let crashMonitorInterval = null;
-
-    function setMonitoredGroup(groupId) {
-        monitoredGroupId.value = groupId;
-        localStorage.setItem('gm-monitored-group', groupId);
+    function refreshCrashPage() {
+        refreshAll();
+        loadCrashData();
     }
+
+    // ── crash alerts (owned by the groupMonitor store) ───────────────────────
+    // Background crash checks and webhook delivery run in the store from login;
+    // this page only edits the per-group settings and can send one manually.
+    const webhookConfigs = computed(() => monitorStore.webhooks.filter((w) => w.groupId === selectedGroupId.value));
+    const monitorCrashEnabled = computed(() => monitorStore.getGroupSettings(selectedGroupId.value).crashEnabled);
+    const crashWebhookBusy = computed(() =>
+        webhookConfigs.value.some((w) => w.type === 'crash-alert' && monitorStore.webhookState[w.id]?.sending)
+    );
 
     function toggleCrashMonitor(enabled) {
-        monitorCrashEnabled.value = enabled;
-        localStorage.setItem('gm-monitor-crash', enabled ? '1' : '0');
-        if (enabled) startCrashMonitor();
-        else stopCrashMonitor();
-    }
-
-    async function backgroundCrashCheck() {
-        const groupId = monitoredGroupId.value || selectedGroupId.value;
-        if (!groupId || !monitorCrashEnabled.value) return;
-        try {
-            const rows = [];
-            await sqliteService.execute(
-                (row) => rows.push({ at: row[0], displayName: row[1], location: row[2] }),
-                `SELECT created_at, display_name, location FROM gamelog_join_leave WHERE type = 'OnPlayerLeft' AND location LIKE '%${groupId}%' AND created_at >= datetime('now', '-10 minutes') ORDER BY created_at DESC`
-            );
-            if (!rows.length) return;
-            const windowMs = crashThreshold.value * 1000;
-            const thr = crashThreshold.value;
-            const startMs = new Date(rows[0].at).getTime();
-            const windowEvs = rows.filter((r) => startMs - new Date(r.at).getTime() <= windowMs);
-            if (windowEvs.length >= thr) {
-                const session = {
-                    startAt: rows[0].at, endAt: rows[windowEvs.length - 1].at,
-                    count: windowEvs.length, windowSeconds: crashWindowSec.value,
-                    severity: windowEvs.length >= thr * 3 ? 'high' : windowEvs.length >= thr * 1.5 ? 'medium' : 'low',
-                    location: rows[0].location ?? '',
-                    players: windowEvs.map((e) => e.displayName).filter(Boolean)
-                };
-                await sendCrashToAllWebhooks(session);
-            }
-        } catch { /* silent — background check is non-fatal */ }
-    }
-
-    function startCrashMonitor() {
-        stopCrashMonitor();
-        crashMonitorInterval = setInterval(backgroundCrashCheck, 60_000);
-    }
-
-    function stopCrashMonitor() {
-        if (crashMonitorInterval) { clearInterval(crashMonitorInterval); crashMonitorInterval = null; }
-    }
-
-    async function webhookScheduler() {
-        const now = Date.now();
-        for (const wh of webhookConfigs.value) {
-            if (!wh.enabled || !wh.intervalMinutes || wh.type === 'crash-alert') continue;
-            const last = webhookLastSent.value[wh.id] ?? 0;
-            if (now - last < wh.intervalMinutes * 60_000) continue;
-            const fn = getPayloadFn(wh.type, wh.id);
-            if (!fn) continue;
-            webhookLastSent.value = { ...webhookLastSent.value, [wh.id]: now };
-            saveWebhookLastSent();
-            await sendWebhook(wh.id, fn).catch(() => { });
-        }
-    }
-
-    function startWebhookScheduler() {
-        stopWebhookScheduler();
-        webhookSchedulerInterval = setInterval(webhookScheduler, 60_000);
-    }
-
-    function stopWebhookScheduler() {
-        if (webhookSchedulerInterval) { clearInterval(webhookSchedulerInterval); webhookSchedulerInterval = null; }
-    }
-
-    function addWebhook() {
-        const url = webhookNewUrl.value.trim();
-        if (!url) return;
-        const id = `wh-${Date.now()}`;
-        const name = webhookNewName.value.trim() || WEBHOOK_TYPE_LABELS[webhookNewType.value] || 'Webhook';
-        webhookConfigs.value = [...webhookConfigs.value, {
-            id, name, url, type: webhookNewType.value,
-            color: webhookNewColor.value || '#5865f2',
-            enabled: true, intervalMinutes: Number(webhookNewInterval.value) || 0
-        }];
-        saveWebhookConfigs();
-        webhookNewUrl.value = '';
-        webhookNewName.value = '';
-        webhookNewInterval.value = 0;
-    }
-
-    function updateWebhookInterval(id, minutes) {
-        webhookConfigs.value = webhookConfigs.value.map((w) =>
-            w.id === id ? { ...w, intervalMinutes: Number(minutes) || 0 } : w
-        );
-        saveWebhookConfigs();
-    }
-
-    function updateWebhookColor(id, color) {
-        webhookConfigs.value = webhookConfigs.value.map((w) =>
-            w.id === id ? { ...w, color } : w
-        );
-        saveWebhookConfigs();
-    }
-
-    function removeWebhook(id) {
-        webhookConfigs.value = webhookConfigs.value.filter((w) => w.id !== id);
-        saveWebhookConfigs();
-        const s = { ...webhookStatus.value };
-        delete s[id];
-        webhookStatus.value = s;
-    }
-
-    function toggleWebhook(id) {
-        webhookConfigs.value = webhookConfigs.value.map((w) => w.id === id ? { ...w, enabled: !w.enabled } : w);
-        saveWebhookConfigs();
-    }
-
-    async function doFetchWebhook(url, payload) {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    }
-
-    function hexToDiscordColor(hex) {
-        return parseInt((hex ?? '#5865f2').replace('#', ''), 16);
-    }
-
-    function buildLeaderboardPayload(type, configId) {
-        const config = webhookConfigs.value.find((w) => w.id === configId);
-        const color = hexToDiscordColor(config?.color);
-        const groupName = selectedGroup.value?.name ?? 'Unknown Group';
-        let title, subtitle, rows, nameFn, countFn;
-        if (type === 'kick-board') {
-            title = 'Top Kickers'; subtitle = 'Who has issued the most instance kicks. Players are temporarily removed from the instance for 1 hour but remain in the group.';
-            rows = kickLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
-        } else if (type === 'most-kicked') {
-            title = 'Most Kicked'; subtitle = 'Who has been instance kicked the most. These players were removed from instances the most times.';
-            rows = kickedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
-        } else if (type === 'snitch-report') {
-            title = 'Top Snitches'; subtitle = 'Who has started the most vote-kicks against other players in group instances.';
-            rows = vkSnitchLeaderboard.value; nameFn = (r) => r.name; countFn = (r) => r.initiated;
-        } else if (type === 'vk-targets') {
-            title = 'Most Vote-Kicked'; subtitle = 'Who has had the most vote-kicks initiated against them. These are the most targeted players.';
-            rows = vkTargetLeaderboard.value; nameFn = (r) => r.name; countFn = (r) => r.initiated;
-        } else if (type === 'ban-board') {
-            title = 'Top Banners'; subtitle = 'Who has issued the most group bans. These moderators have removed the most members from the group permanently.';
-            rows = banLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
-        } else if (type === 'most-banned') {
-            title = 'Most Banned'; subtitle = 'Who has been banned from the group the most times. These players have the most ban events on record.';
-            rows = bannedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
-        } else if (type === 'invite-board') {
-            title = 'Top Inviters'; subtitle = 'Who has sent the most group invites and their join conversion rate.';
-            rows = inviteLeaderboard.value;
-            nameFn = (r) => r.actor;
-            countFn = (r) => `${r.invites} invites · ${r.converts} joined · ${r.rate}%`;
-        } else if (type === 'warn-board') {
-            title = 'Top Warners'; subtitle = 'Who has issued the most instance warnings to players.';
-            rows = warnLeaderboard.value; nameFn = (r) => r.actor; countFn = (r) => r.count;
-        } else if (type === 'most-warned') {
-            title = 'Most Warned'; subtitle = 'Who has received the most instance warnings.';
-            rows = mostWarnedLeaderboard.value; nameFn = (r) => r.target; countFn = (r) => r.count;
-        } else { return null; }
-        const lines = rows.slice(0, 25).map((r, i) => `${i + 1}. ${nameFn(r)} — ${countFn(r)}`);
-        const description = `*${subtitle}*\n\n${lines.join('\n') || 'No data yet.'}`;
-        return { embeds: [{ title: `${title} — ${groupName}`, description,
-            color, footer: { text: 'PAW Inviter - VRCX' }, timestamp: new Date().toISOString() }] };
-    }
-
-    function buildCrashAlertPayload(session) {
-        const groupName = selectedGroup.value?.name ?? (monitoredGroupId.value ? `Group ${monitoredGroupId.value.slice(-6)}` : 'Unknown Group');
-        const color = session.severity === 'high' ? 0xe74c3c : session.severity === 'medium' ? 0xf39c12 : 0x3498db;
-        return { embeds: [{ title: `⚠️ Instance Crash Detected — ${groupName}`, description: `${session.count} players left in ${session.windowSeconds}s`, color, fields: [
-            { name: 'Time', value: fmtDate(session.startAt), inline: true },
-            { name: 'Count', value: String(session.count), inline: true },
-            { name: 'Severity', value: session.severity.toUpperCase(), inline: true },
-            { name: 'Players', value: session.players.slice(0, 20).join(', ') || 'Unknown', inline: false }
-        ], footer: { text: 'PAW Inviter - VRCX' }, timestamp: new Date().toISOString() }] };
-    }
-
-    async function sendWebhook(configId, payloadOrFn) {
-        const config = webhookConfigs.value.find((w) => w.id === configId);
-        if (!config?.url) return;
-        webhookSendingIds.value = new Set([...webhookSendingIds.value, configId]);
-        try {
-            const payload = typeof payloadOrFn === 'function' ? payloadOrFn() : payloadOrFn;
-            await doFetchWebhook(config.url, payload);
-            webhookStatus.value = { ...webhookStatus.value, [configId]: { ok: true, msg: 'Sent ✓' } };
-            toast.success(`Sent to "${config.name}"`);
-        } catch (err) {
-            const msg = err?.message ?? 'Failed';
-            webhookStatus.value = { ...webhookStatus.value, [configId]: { ok: false, msg } };
-            toast.error(`Webhook failed: ${msg}`);
-        } finally {
-            webhookSendingIds.value = new Set([...webhookSendingIds.value].filter((id) => id !== configId));
-        }
-    }
-
-    function getPayloadFn(type, configId) {
-        const leaderboardTypes = ['kick-board', 'most-kicked', 'ban-board', 'most-banned', 'snitch-report', 'vk-targets', 'invite-board', 'warn-board', 'most-warned'];
-        if (leaderboardTypes.includes(type)) return () => buildLeaderboardPayload(type, configId);
-        return null;
+        if (!selectedGroupId.value) return;
+        monitorStore.setGroupSettings(selectedGroupId.value, { crashEnabled: enabled });
     }
 
     async function sendCrashToAllWebhooks(session) {
-        const targets = webhookConfigs.value.filter((w) => w.enabled && w.type === 'crash-alert');
-        if (!targets.length) { toast.warning('No crash-alert webhooks configured. Add one in the Webhook tab.'); return; }
-        await Promise.all(targets.map((w) => sendWebhook(w.id, buildCrashAlertPayload(session))));
+        const res = await monitorStore.sendCrashSession(session, selectedGroupId.value);
+        if (!res.ok) toast.warning(t(`view.group_monitor.error.${res.error}`));
+        else toast.success(t('view.group_monitor.webhook.queued'));
     }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
     onMounted(async () => {
-        await initWebhooks();
         loadVoteKickHistory();
         window.addEventListener('resize', onResize);
-        const _savedGroupId = localStorage.getItem('gm-group-id');
+        const _savedGroupId = lastViewedGroupId();
         const _startGroupId = (_savedGroupId && allGroups.value.some((g) => g.id === _savedGroupId)) ? _savedGroupId : allGroups.value[0]?.id;
         // Only fetch if data isn't already loaded from another GroupMonitor page this session
         if (_startGroupId && _startGroupId !== selectedGroupId.value) handleGroupChange(_startGroupId);
         startPolling();
-        if (monitorCrashEnabled.value) startCrashMonitor();
-        startWebhookScheduler();
+    });
+
+    onActivated(() => {
+        onPageActivated();
+        loadCrashData();
     });
 
     onBeforeUnmount(() => {
         stopPolling();
-        stopCrashMonitor();
-        stopWebhookScheduler();
         window.removeEventListener('resize', onResize);
         crashChart?.dispose();
         membersChart?.dispose();
@@ -1077,7 +805,7 @@
                         <SelectItem value="0">All time</SelectItem>
                     </SelectContent>
                 </Select>
-                <Button variant="outline" size="icon" :disabled="!selectedGroupId || isLoadingAudit" @click="refreshAll" :title="auditAutoLoading ? 'Loading history…' : 'Refresh'">
+                <Button variant="outline" size="icon" :disabled="!selectedGroupId || isLoadingAudit" @click="refreshCrashPage" :title="auditAutoLoading ? 'Loading history…' : 'Refresh'">
                     <RefreshCw :class="{ 'animate-spin': isLoadingAudit || auditAutoLoading || isFetchingNewLogs }" class="size-4" />
                 </Button>
             </div>
@@ -1134,14 +862,14 @@
                             <label class="text-xs text-muted-foreground whitespace-nowrap">Min players to flag:</label>
                             <input
                                 type="number" min="2" max="50" :value="crashThreshold"
-                                @input="crashThreshold = Number($event.target.value)"
+                                @change="crashThreshold = Number($event.target.value)"
                                 class="w-16 h-7 rounded border bg-background px-2 text-sm text-center tabular-nums" />
                         </div>
                         <div class="flex items-center gap-2">
                             <label class="text-xs text-muted-foreground whitespace-nowrap">Within (seconds):</label>
                             <input
                                 type="number" min="10" max="600" :value="crashWindowSec"
-                                @input="crashWindowSec = Number($event.target.value)"
+                                @change="crashWindowSec = Number($event.target.value)"
                                 class="w-20 h-7 rounded border bg-background px-2 text-sm text-center tabular-nums" />
                         </div>
                         <div class="flex items-center gap-2 ml-auto">
@@ -1197,7 +925,7 @@
                                         No crash patterns detected with current threshold settings.
                                     </td>
                                 </tr>
-                                <tr v-for="(s, i) in detectedCrashes" :key="i"
+                                <tr v-for="s in detectedCrashes" :key="s.id"
                                     class="border-b last:border-0 hover:bg-muted/30 transition-colors">
                                     <td class="px-3 py-2.5 text-xs text-muted-foreground tabular-nums whitespace-nowrap">{{ fmtDate(s.startAt) }}</td>
                                     <td class="px-3 py-2.5">
@@ -1214,7 +942,7 @@
                                     </td>
                                     <td class="px-3 py-2.5">
                                         <Button variant="outline" size="sm" class="h-7 text-xs"
-                                            :disabled="webhookSendingIds.has(webhookConfigs.find(w => w.type === 'crash-alert')?.id)"
+                                            :disabled="crashWebhookBusy"
                                             @click="sendCrashToAllWebhooks(s)">
                                             <Send class="size-3 mr-1" />Alert
                                         </Button>

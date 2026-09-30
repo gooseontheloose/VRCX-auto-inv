@@ -46,6 +46,7 @@
                                     variant="outline"
                                     size="sm"
                                     :model-value="feedTable.vip"
+                                    :ariaLabel="t('view.feed.favorites_only_tooltip')"
                                     @update:modelValue="
                                         (v) => {
                                             feedTable.vip = v;
@@ -123,9 +124,6 @@
     const hasDateFilter = computed(() => !!(feedTable.value.dateFrom || feedTable.value.dateTo));
     const activeFilterCount = computed(() => (hasDateFilter.value ? 1 : 0));
 
-    /**
-     *
-     */
     function applyDateFilter() {
         if (dateRange.value?.start) {
             const s = dateRange.value.start;
@@ -143,9 +141,6 @@
         feedTableLookup();
     }
 
-    /**
-     *
-     */
     function clearDateFilter() {
         dateRange.value = undefined;
         feedTable.value.dateFrom = '';
@@ -159,12 +154,11 @@
     const pageSizes = computed(() => appearanceSettingsStore.tablePageSizes);
 
     /**
-     *
      * @param row
      */
     function getFeedRowId(row) {
-        if (row?.id != null) return `id:${row.id}`;
-        if (row?.rowId != null) return `row:${row.rowId}`;
+        if (row?.id != null) return `id:${row.id}:${row?.type ?? ''}`;
+        if (row?.rowId != null) return `row:${row.rowId}:${row?.type ?? ''}`;
 
         const type = row?.type ?? '';
         const createdAt = row?.created_at ?? row?.createdAt ?? '';
@@ -219,7 +213,6 @@
     });
 
     /**
-     *
      * @param value
      */
     function handleFeedFilterChange(value) {

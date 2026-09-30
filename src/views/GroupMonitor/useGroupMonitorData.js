@@ -5,7 +5,7 @@
  * and shared reactively — navigating between pages never re-downloads history.
  */
 
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { request } from '../../services/request';
 import sqliteService from '../../services/sqlite';
 import {
@@ -17,6 +17,12 @@ import {
 } from '../../services/auditLogDb';
 import { showUserDialog } from '../../coordinators/userCoordinator';
 import { toast } from 'vue-sonner';
+import { watchState } from '../../services/watchState';
+import { useGroupMonitorStore } from '../../stores/groupMonitor';
+import { useUserStore } from '../../stores/user';
+import { HISTORY_VERSION, isHistoryComplete, newestMark } from '../../services/groupMonitor/auditGaps';
+import { pollAuditLog } from '../../services/groupMonitor/auditPoller';
+import { drainGaps, indexedAuditDb, recordGap, runRepairScan } from '../../services/groupMonitor/gapBackfill';
 
 // ── Module-level singleton state ──────────────────────────────────────────────
 // These refs are created ONCE at import time and shared across all 5 pages.
@@ -41,12 +47,9 @@ const profileCache = ref(new Map());
 const profileLookupInProgress = ref(new Set());
 const resolvedUserNames = ref({});
 
-// ── Webhook singleton (shared across all 5 GroupMonitor pages) ────────────────
-const webhookConfigs = ref([]);
-const webhookSendingIds = ref(new Set());
-const webhookStatus = ref({});
-const webhookLastSent = ref({});
-let _webhookInitDone = false;
+// Webhooks, crash alerts and background polling live in the groupMonitor
+// Pinia store (src/stores/groupMonitor.js), which runs from login regardless
+// of which page is open. This module only holds what the pages display.
 
 // ── Group audit permission cache ──────────────────────────────────────────────
 const groupAuditPermIds = ref(new Set());    // groupIds where user has group-audit-view
@@ -60,7 +63,9 @@ const groupPermCheckDone = ref(false);
         if (p) groupAuditPermIds.value = new Set(JSON.parse(p));
         const d = localStorage.getItem('gm-group-audit-data-ids');
         if (d) groupsWithCachedData.value = new Set(JSON.parse(d));
-    } catch {}
+    } catch {
+        // corrupt cache: start empty, it is rebuilt on the next group load
+    }
 })();
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -92,6 +97,10 @@ const AUDIT_LABELS = {
     'group.join.request.accept': 'Join Request Accepted',
     'group.join.request.reject': 'Join Request Rejected',
     'group.join.request.cancel': 'Join Request Cancelled',
+    'group.request.accept': 'Join Request Accepted',
+    'group.request.reject': 'Join Request Rejected',
+    'group.request.block': 'Join Request Blocked',
+    'group.request.cancel': 'Join Request Cancelled',
     'group.instance.create': 'Instance Created',
     'group.instance.close': 'Instance Closed',
     'group.announcement.create': 'Announcement Posted',
@@ -100,7 +109,13 @@ const AUDIT_LABELS = {
     'group.post.delete': 'Post Deleted',
     'group.gallery.image.add': 'Gallery Image Added',
     'group.gallery.image.remove': 'Gallery Image Removed',
-    'group.group.update': 'Group Updated'
+    'group.group.update': 'Group Updated',
+    'group.update': 'Group Updated',
+    'group.create': 'Group Created',
+    'group.member.user.update': 'Member Settings Updated',
+    'group.instance.announcement': 'Instance Announcement',
+    'group.transfer.start': 'Ownership Transfer Started',
+    'group.transfer.accept': 'Ownership Transfer Accepted'
 };
 
 const _AR = 'bg-red-500/15 text-red-500 border-red-500/30';
@@ -123,6 +138,10 @@ const AUDIT_BADGE_CLASSES = {
     'group.member.role.assign': _AP, 'group.member.role.remove': _AP,
     'group.member.role.unassign': _AP, 'group.role.update': _AP,
     'group.member.update': _AA, 'group.group.update': _AA, 'group.instance.close': _AA,
+    'group.request.reject': _AR, 'group.request.block': _AR, 'group.request.accept': _AG,
+    'group.request.cancel': _AB, 'group.create': _AG, 'group.update': _AA,
+    'group.member.user.update': _AA, 'group.instance.announcement': _AB,
+    'group.transfer.start': _AP, 'group.transfer.accept': _AP,
 };
 
 function auditLabel(t) { return AUDIT_LABELS[t] ?? t; }
@@ -168,7 +187,7 @@ function parseKickTarget(description) {
 
 function parseTargetFromDescription(desc) {
     if (!desc) return null;
-    let m = desc.match(/^User (.+?) has been /i);
+    let m = desc.match(/^User (.+?) (?:has been|was) /i);
     if (m) return m[1].trim();
     m = desc.match(/\bfor (.+?)\.?\s*$/i);
     if (m) return m[1].trim();
@@ -192,7 +211,8 @@ function resolveName(displayName, id) {
 }
 
 function resolveKickTarget(r) {
-    return r.targetDisplayName || parseKickTarget(r.description) || resolvedUserNames.value[r.targetId] || null;
+    return r.targetDisplayName || parseKickTarget(r.description) || resolvedUserNames.value[r.targetId]
+        || parseTargetFromDescription(r.description) || null;
 }
 
 function resolveAuditActor(entry) {
@@ -264,7 +284,7 @@ async function openProfileByName(displayName) {
 }
 
 // ── Audit log fetch helpers ───────────────────────────────────────────────────
-async function dbSaveAuditBatch(groupId, novelEntries, total, fullyLoaded = false) {
+async function dbSaveAuditBatch(groupId, novelEntries, total, fullyLoaded = false, extra = {}) {
     let entriesSaved = true;
     try {
         if (novelEntries.length) await auditDbSaveEntries(groupId, novelEntries);
@@ -275,8 +295,10 @@ async function dbSaveAuditBatch(groupId, novelEntries, total, fullyLoaded = fals
     // Never set fullyLoaded=true if entries failed to persist — it would leave the
     // DB with meta claiming full history but no actual rows on next open.
     const metaFullyLoaded = fullyLoaded && (entriesSaved || novelEntries.length === 0);
+    const meta = { total, fullyLoaded: metaFullyLoaded, savedAt: Date.now(), ...extra };
+    if (metaFullyLoaded) meta.historyVersion = HISTORY_VERSION;
     try {
-        await auditDbSaveMeta(groupId, { total, fullyLoaded: metaFullyLoaded, savedAt: Date.now() });
+        await auditDbSaveMeta(groupId, meta);
     } catch (err) {
         console.warn('[GroupMonitor] IndexedDB meta save failed:', err);
     }
@@ -292,42 +314,95 @@ async function fetchAuditPage(groupId, page) {
 }
 
 async function fetchAuditBefore(groupId, beforeDate) {
+    // +1 ms: entries sharing the oldest cached millisecond may not all be
+    // cached yet, whether VRChat's endDate is inclusive or not (callers
+    // drop the ones already known).
+    const end = Date.parse(beforeDate);
+    const endDate = Number.isFinite(end) ? new Date(end + 1).toISOString() : beforeDate;
     const data = await request(`groups/${groupId}/auditLogs`, {
         method: 'GET',
-        params: { n: auditPageSize, endDate: beforeDate }
+        params: { n: auditPageSize, endDate }
     });
     const entries = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
     return entries;
 }
 
+async function fetchAuditWindow(groupId, params) {
+    const data = await request(`groups/${groupId}/auditLogs`, {
+        method: 'GET',
+        params: { n: auditPageSize, ...params },
+        silentErrors: true
+    });
+    return Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
+}
+
+function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+}
+
+function isAborted(groupId) {
+    return autoLoadAbort || selectedGroupId.value !== groupId;
+}
+
 // ── Background auto-loaders ───────────────────────────────────────────────────
+// History is only marked complete when VRChat itself says there is nothing
+// older (a date page with fewer entries than asked for). Errors, aborts and
+// pages without progress leave it incomplete, so the next open resumes.
+async function finishHistory(groupId) {
+    if (selectedGroupId.value !== groupId) return;
+    auditAutoLoading.value = false;
+    auditFullyLoaded.value = true;
+    await dbSaveAuditBatch(groupId, [], auditTotal.value, true, { lastError: null });
+    console.debug('[GroupMonitor] Audit history fully loaded:', auditLogs.value.length, 'entries');
+}
+
+async function stopHistory(groupId, reason) {
+    if (selectedGroupId.value !== groupId) return;
+    auditAutoLoading.value = false;
+    auditFullyLoaded.value = false;
+    const lastError = typeof reason === 'string' ? reason : (reason?.message ?? String(reason));
+    console.warn('[GroupMonitor] Audit history load stopped, resumes next time:', lastError);
+    await dbSaveAuditBatch(groupId, [], auditTotal.value, false, { lastError });
+}
+
 async function autoLoadAuditByDate(groupId) {
+    auditAutoLoading.value = true;
     auditLimitReached.value = true;
-    console.debug('[GroupMonitor] Switching to date-based audit fetch past offset limit');
+    console.debug('[GroupMonitor] Fetching older audit entries by date');
     while (true) {
-        if (autoLoadAbort || selectedGroupId.value !== groupId) break;
-        if (auditTotal.value > 0 && auditLogs.value.length >= auditTotal.value) break;
+        if (isAborted(groupId)) break;
         const oldest = oldestAuditDate();
-        if (!oldest) break;
-        await new Promise((r) => setTimeout(r, 1000));
-        if (autoLoadAbort || selectedGroupId.value !== groupId) break;
+        if (!oldest) {
+            // nothing cached and page 0 was empty: the group has no audit log yet
+            await finishHistory(groupId);
+            return;
+        }
+        await sleep(1000);
+        if (isAborted(groupId)) break;
+        let entries;
         try {
-            const entries = await fetchAuditBefore(groupId, oldest);
-            const novel = entries.filter((e) => e.created_at < oldest && !auditLogs.value.find((x) => x.id === e.id));
-            if (novel.length === 0) break;
+            entries = await fetchAuditBefore(groupId, oldest);
+        } catch (err) {
+            await stopHistory(groupId, err);
+            return;
+        }
+        if (isAborted(groupId)) break;
+        const known = new Set(auditLogs.value.map((e) => e.id));
+        const novel = entries.filter((e) => e?.id != null && !known.has(e.id));
+        if (novel.length) {
             auditLogs.value = mergeAuditEntries(auditLogs.value, novel);
             await dbSaveAuditBatch(groupId, novel, auditTotal.value, false);
-        } catch (err) {
-            console.error('[GroupMonitor] Date-based audit fetch error:', err);
-            break;
+        }
+        if (entries.length < auditPageSize) {
+            await finishHistory(groupId);
+            return;
+        }
+        if (!novel.length) {
+            await stopHistory(groupId, 'no older entries returned for a full page');
+            return;
         }
     }
-    if (selectedGroupId.value === groupId) {
-        auditAutoLoading.value = false;
-        auditFullyLoaded.value = true;
-        await dbSaveAuditBatch(groupId, [], auditTotal.value, true);
-        console.debug('[GroupMonitor] Audit history fully loaded:', auditLogs.value.length, 'entries');
-    }
+    if (selectedGroupId.value === groupId) auditAutoLoading.value = false;
 }
 
 async function autoLoadAuditPages(groupId, startPage, total) {
@@ -335,48 +410,158 @@ async function autoLoadAuditPages(groupId, startPage, total) {
     const maxOffsetPage = Math.floor(API_OFFSET_MAX / auditPageSize);
     const totalPages = Math.min(Math.ceil(total / auditPageSize), maxOffsetPage + 1);
     for (let page = startPage; page <= maxOffsetPage && page < totalPages; page++) {
-        if (autoLoadAbort || selectedGroupId.value !== groupId) break;
-        await new Promise((r) => setTimeout(r, 800));
-        if (autoLoadAbort || selectedGroupId.value !== groupId) break;
+        if (isAborted(groupId)) break;
+        await sleep(800);
+        if (isAborted(groupId)) break;
         try {
             const { entries } = await fetchAuditPage(groupId, page);
             if (entries.length === 0) break;
             auditLogs.value = mergeAuditEntries(auditLogs.value, entries);
             await dbSaveAuditBatch(groupId, entries, auditTotal.value, false);
         } catch (err) {
-            console.error('[GroupMonitor] Auto-load page error:', err);
-            break;
-        }
-    }
-    if (selectedGroupId.value === groupId) {
-        if (auditLogs.value.length > API_OFFSET_MAX) {
-            autoLoadAuditByDate(groupId);
+            await stopHistory(groupId, err);
             return;
         }
-        auditAutoLoading.value = false;
-        auditFullyLoaded.value = true;
-        await dbSaveAuditBatch(groupId, [], auditTotal.value, true);
+    }
+    if (isAborted(groupId)) {
+        if (selectedGroupId.value === groupId) auditAutoLoading.value = false;
+        return;
+    }
+    // The offset pages ran out (end of the list, the offset cap, or an empty
+    // page): confirm the end by date before calling the history complete.
+    await autoLoadAuditByDate(groupId);
+}
+
+// ── Gap catch-up / backfill ───────────────────────────────────────────────────
+const PAGE_CATCHUP_MAX_PAGES = 30;
+const PAGE_CATCHUP_DELAY_MS = 800;
+const POLL_CATCHUP_MAX_PAGES = 5;
+/** Gap requests per 60 s refresh while the background service is not polling this group. */
+const PAGE_GAP_BUDGET = 2;
+const _repairScanned = new Set();
+// Thrown to stop a catch-up when the group changes: returning an empty page
+// instead would look like the end of the log and hide the unfetched window.
+const CATCH_UP_ABORTED = new Error('catch-up aborted');
+
+function _backgroundPaused() {
+    try {
+        return Date.now() < (useGroupMonitorStore().backfillPausedUntil ?? 0);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Pages back from the newest entry until it reaches the newest cached entry
+ * (paced). Whatever could not be fetched within the page budget is queued as
+ * a gap for backfill.
+ */
+async function catchUpToCache(groupId, maxPages) {
+    const cacheMark = auditLogs.value.length ? newestMark(auditLogs.value) : null;
+    const res = await pollAuditLog({
+        fetchPage: async (offset) => {
+            if (offset > 0) {
+                await sleep(PAGE_CATCHUP_DELAY_MS);
+                if (isAborted(groupId)) throw CATCH_UP_ABORTED;
+            }
+            return fetchAuditPage(groupId, offset / auditPageSize);
+        },
+        watermark: null,
+        cacheMark,
+        maxPages
+    });
+    if (res.gap) {
+        await recordGap(indexedAuditDb, groupId, res.gap, 'catch-up').catch((err) =>
+            console.warn('[GroupMonitor] could not queue audit gap:', err)
+        );
+    }
+    return res;
+}
+
+/** Fills queued gaps of the selected group when the background service does not. */
+async function drainPageGaps(groupId) {
+    if (_backgroundPaused()) return;
+    try {
+        if (!_repairScanned.has(groupId) && auditLogs.value.length) {
+            _repairScanned.add(groupId);
+            await runRepairScan({ db: indexedAuditDb, groupId, entries: auditLogs.value });
+        }
+        const res = await drainGaps({
+            db: indexedAuditDb,
+            groupId,
+            fetchWindow: (params) => fetchAuditWindow(groupId, params),
+            budget: PAGE_GAP_BUDGET,
+            isPaused: _backgroundPaused
+        });
+        if (res.fetched.length) mergeFetchedEntries(groupId, res.fetched, null);
+    } catch (err) {
+        console.debug('[GroupMonitor] gap backfill failed (non-fatal):', err);
     }
 }
 
 // ── Core load functions ───────────────────────────────────────────────────────
-async function pollNewAuditLogs() {
+async function pollNewAuditLogs({ force = false } = {}) {
     const groupId = selectedGroupId.value;
-    if (!groupId || isFetchingNewLogs.value || auditAutoLoading.value) return;
+    if (!groupId || isFetchingNewLogs.value || isLoadingAudit.value) return;
+    // The background service already polls monitored groups (and fills their
+    // gaps) and pushes the entries here (see _attachBackgroundFeed); don't hit
+    // the API twice.
+    if (!force && _backgroundPolls(groupId)) return;
     isFetchingNewLogs.value = true;
     try {
-        const { entries, totalCount } = await fetchAuditPage(groupId, 0);
-        if (entries.length > 0) {
-            const before = auditLogs.value.length;
-            auditLogs.value = mergeAuditEntries(auditLogs.value, entries);
-            auditTotal.value = totalCount;
-            if (auditLogs.value.length !== before) {
-                const novel = entries.filter((e) => !auditLogs.value.slice(entries.length).find((x) => x.id === e.id));
-                await dbSaveAuditBatch(groupId, novel.length ? novel : entries, totalCount, auditFullyLoaded.value);
+        const res = await catchUpToCache(groupId, POLL_CATCHUP_MAX_PAGES);
+        mergeFetchedEntries(groupId, res.fetched, res.totalCount);
+        if (!_backgroundPolls(groupId) && !auditAutoLoading.value) await drainPageGaps(groupId);
+    } catch (err) {
+        if (err !== CATCH_UP_ABORTED) console.debug('[GroupMonitor] poll failed (non-fatal):', err);
+    } finally {
+        isFetchingNewLogs.value = false;
+    }
+}
+
+function mergeFetchedEntries(groupId, entries, totalCount) {
+    if (groupId !== selectedGroupId.value || !entries?.length) return;
+    const known = new Set(auditLogs.value.map((e) => e.id));
+    const novel = entries.filter((e) => !known.has(e.id));
+    if (Number.isFinite(totalCount)) auditTotal.value = Math.max(auditTotal.value, totalCount);
+    if (!novel.length) return;
+    auditLogs.value = [...novel, ...auditLogs.value];
+    dbSaveAuditBatch(groupId, novel, auditTotal.value, auditFullyLoaded.value);
+}
+
+function _backgroundPolls(groupId) {
+    try {
+        return useGroupMonitorStore().isPollingGroup(groupId);
+    } catch {
+        return false;
+    }
+}
+
+let _feedAttached = false;
+// Entries pushed by the background service while the history backfill runs are
+// merged (deduped by id) once it finishes, so none go missing until a reload.
+let _feedBuffer = [];
+watch([auditAutoLoading, isLoadingAudit], ([autoLoading, loading]) => {
+    if (autoLoading || loading || !_feedBuffer.length) return;
+    const buffered = _feedBuffer;
+    _feedBuffer = [];
+    for (const b of buffered) mergeFetchedEntries(b.groupId, b.entries, b.totalCount);
+});
+function _attachBackgroundFeed() {
+    if (_feedAttached) return;
+    try {
+        useGroupMonitorStore().onAuditEntries((groupId, entries, totalCount) => {
+            // don't race the history backfill's own merge/meta bookkeeping
+            if (auditAutoLoading.value || isLoadingAudit.value) {
+                if (groupId === selectedGroupId.value) _feedBuffer.push({ groupId, entries, totalCount });
+                return;
             }
-        }
-    } catch { /* silent - poll failures are non-fatal */ }
-    finally { isFetchingNewLogs.value = false; }
+            mergeFetchedEntries(groupId, entries, totalCount);
+        });
+        _feedAttached = true;
+    } catch (err) {
+        console.warn('[GroupMonitor] could not attach to background feed:', err);
+    }
 }
 
 async function loadAuditLogs(groupId) {
@@ -384,47 +569,36 @@ async function loadAuditLogs(groupId) {
     autoLoadAbort = false;
     auditError.value = '';
     const meta = auditGroupMeta.value;
-    // Capture how many entries were loaded from cache before we fetch page 0.
-    // Used below to avoid trusting fullyLoaded when the entry cache is empty/lost.
-    const preloadCount = auditLogs.value.length;
+    const hadCache = auditLogs.value.length > 0;
+    let history = null;
     isLoadingAudit.value = true;
     try {
-        const { entries, totalCount } = await fetchAuditPage(groupId, 0);
-        auditTotal.value = totalCount;
-        const before = auditLogs.value.length;
-        auditLogs.value = mergeAuditEntries(auditLogs.value, entries);
-        const changed = auditLogs.value.length !== before;
-
-        if (auditLogs.value.length >= totalCount) {
-            if (!meta?.fullyLoaded || changed) {
-                auditFullyLoaded.value = true;
-                await dbSaveAuditBatch(groupId, changed ? entries : [], totalCount, true);
-            }
-            return;
+        // No "cache length >= totalCount" shortcut: totalCount only counts what
+        // VRChat still keeps, and a cache can be larger than that with holes.
+        const res = await catchUpToCache(groupId, PAGE_CATCHUP_MAX_PAGES);
+        if (selectedGroupId.value !== groupId) return;
+        if (Number.isFinite(res.totalCount)) auditTotal.value = res.totalCount;
+        const known = new Set(auditLogs.value.map((e) => e.id));
+        const novel = res.fetched.filter((e) => !known.has(e.id));
+        if (novel.length) {
+            auditLogs.value = mergeAuditEntries(auditLogs.value, novel);
+            await dbSaveAuditBatch(groupId, novel, auditTotal.value, isHistoryComplete(meta));
         }
-
-        if (changed) {
-            await dbSaveAuditBatch(groupId, entries, auditTotal.value, meta?.fullyLoaded ?? false);
-        }
-
-        // Only trust fullyLoaded if we actually had cached entries before this fetch.
-        // If preloadCount is 0 (or ≤ one page), the cache was likely empty/lost —
-        // re-download the full history rather than stopping at page 0.
-        if (meta?.fullyLoaded && preloadCount > auditPageSize) return;
-
-        if (auditLogs.value.length > API_OFFSET_MAX) {
-            auditAutoLoading.value = true;
-            autoLoadAuditByDate(groupId);
-            return;
-        }
-
-        const nextPage = Math.ceil(auditLogs.value.length / auditPageSize);
-        autoLoadAuditPages(groupId, nextPage, totalCount);
+        if (!isHistoryComplete(meta)) history = hadCache ? 'date' : 'offset';
     } catch (err) {
+        if (err === CATCH_UP_ABORTED) return;
         console.error('[GroupMonitor] Audit load error:', err);
         if (!auditLogs.value.length) auditError.value = err?.message ?? 'Failed to load audit logs';
     } finally {
         isLoadingAudit.value = false;
+    }
+    // Older history: a fresh cache pages by offset; an existing one resumes
+    // from its oldest entry by date (offsets shift as VRChat drops old entries).
+    if (history === 'offset') {
+        const nextPage = Math.ceil(auditLogs.value.length / auditPageSize);
+        autoLoadAuditPages(groupId, Math.max(1, nextPage), auditTotal.value);
+    } else if (history === 'date') {
+        autoLoadAuditByDate(groupId);
     }
 }
 
@@ -453,6 +627,7 @@ async function loadVoteKickHistory() {
     }
 }
 
+let _locationLoadedAt = 0;
 async function loadLocationHistory(groupId) {
     if (!groupId) return;
     isLoadingWorlds.value = true;
@@ -466,7 +641,9 @@ async function loadLocationHistory(groupId) {
             }),
             `SELECT * FROM gamelog_location WHERE location LIKE '%${groupId}%' ORDER BY created_at DESC LIMIT 2000`
         );
+        if (selectedGroupId.value !== groupId) return;
         locationHistory.value = rows;
+        _locationLoadedAt = Date.now();
         console.debug('[GroupMonitor] Location rows:', rows.length);
     } catch (err) {
         console.error('[GroupMonitor] Location history error:', err);
@@ -476,9 +653,42 @@ async function loadLocationHistory(groupId) {
     }
 }
 
+function _currentUserId() {
+    try {
+        return useUserStore().currentUser?.id ?? '';
+    } catch {
+        return '';
+    }
+}
+
+/** Last group opened in Group Monitor on this account (falls back to the pre-2.3 global key). */
+function lastViewedGroupId() {
+    try {
+        const uid = _currentUserId();
+        return (uid && localStorage.getItem(`gm-group-id:${uid}`)) || localStorage.getItem('gm-group-id') || '';
+    } catch {
+        return '';
+    }
+}
+
+function _rememberViewedGroup(id) {
+    try {
+        const uid = _currentUserId();
+        if (uid) localStorage.setItem(`gm-group-id:${uid}`, id);
+        localStorage.setItem('gm-group-id', id);
+    } catch {
+        // storage blocked: only the per-session selection is lost
+    }
+    try {
+        useGroupMonitorStore().noteViewedGroup(id);
+    } catch {
+        // store not ready (tests): background polling picks it up next login
+    }
+}
+
 async function handleGroupChange(id) {
     if (!id) return;
-    localStorage.setItem('gm-group-id', id);
+    _rememberViewedGroup(id);
 
     // Skip if this group is already loaded in memory this session
     if (id === selectedGroupId.value && auditLogs.value.length > 0) return;
@@ -496,46 +706,71 @@ async function handleGroupChange(id) {
 
     await auditDbMigrateFromLocalStorage(id);
 
-    const [cachedEntries, cachedMeta] = await Promise.all([
+    const [cachedEntries, cachedMetaRaw] = await Promise.all([
         auditDbLoadEntries(id).catch(() => []),
         auditDbLoadMeta(id).catch(() => null)
     ]);
+    if (selectedGroupId.value !== id) return;
 
+    let cachedMeta = cachedMetaRaw;
+    // One-time reset: builds before 2.3 marked history "fully loaded" after
+    // fetch errors and at the offset cap. Only this loader's flag is trusted;
+    // the history walk resumes from the oldest cached entry.
+    if (cachedMeta?.fullyLoaded && !isHistoryComplete(cachedMeta)) {
+        cachedMeta = { ...cachedMeta, fullyLoaded: false };
+        auditDbSaveMeta(id, { fullyLoaded: false }).catch(() => {});
+    }
     auditGroupMeta.value = cachedMeta;
 
     if (cachedEntries.length) {
         auditLogs.value = cachedEntries;
         auditTotal.value = cachedMeta?.total ?? cachedEntries.length;
-        if (cachedMeta?.fullyLoaded) auditFullyLoaded.value = true;
+        if (isHistoryComplete(cachedMeta)) auditFullyLoaded.value = true;
         markGroupHasData(id);
     }
 
     console.debug('[GroupMonitor] Group selected:', id,
         '— DB entries:', cachedEntries.length,
-        cachedMeta?.fullyLoaded ? '(fully cached)' : '(cache incomplete)');
+        isHistoryComplete(cachedMeta) ? '(fully cached)' : '(cache incomplete)');
 
     await Promise.all([loadAuditLogs(id), loadLocationHistory(id)]);
+    if (auditLogs.value.length) markGroupHasData(id);
 }
 
 function refreshAll() {
     loadVoteKickHistory();
     if (selectedGroupId.value) {
         loadLocationHistory(selectedGroupId.value);
-        pollNewAuditLogs();
+        pollNewAuditLogs({ force: true });
     }
 }
 
-// ── Singleton polling timer ───────────────────────────────────────────────────
-// Reference-counted so polling runs only while at least one GM page is mounted.
+// ── Singleton UI refresh timer ────────────────────────────────────────────────
+// Reference-counted display refresh for the page being viewed. Webhooks and
+// alerts do NOT depend on this; they run from the groupMonitor store.
 let _mountCount = 0;
 let _pollInterval = null;
 let _vkPollInterval = null;
 
+/** Minute ticker: time-window filters ("last 7 days") recompute with it. */
+const nowTick = ref(Date.now());
+
+function _refreshTick() {
+    nowTick.value = Date.now();
+    pollNewAuditLogs();
+}
+
+function _slowRefresh() {
+    loadVoteKickHistory();
+    if (selectedGroupId.value) loadLocationHistory(selectedGroupId.value);
+}
+
 function startPolling() {
     _mountCount++;
+    _attachBackgroundFeed();
     if (_pollInterval) return;
-    _pollInterval = setInterval(pollNewAuditLogs, 60_000);
-    _vkPollInterval = setInterval(loadVoteKickHistory, 90_000);
+    _pollInterval = setInterval(_refreshTick, 60_000);
+    _vkPollInterval = setInterval(_slowRefresh, 90_000);
 }
 
 function stopPolling() {
@@ -547,6 +782,41 @@ function stopPolling() {
     _vkPollInterval = null;
     autoLoadAbort = true;
 }
+
+/**
+ * KeepAlive brings a page back with whatever it computed when it was left:
+ * refresh the time window and the SQLite-backed data if they are stale.
+ */
+function onPageActivated() {
+    nowTick.value = Date.now();
+    if (!selectedGroupId.value) return;
+    if (Date.now() - _locationLoadedAt > 60_000) _slowRefresh();
+    pollNewAuditLogs();
+}
+
+// Account switch / logout: drop the previous account's view state so the next
+// account never sees (or re-uses) it. Pages remount after login because
+// MainLayout is v-if'd on isLoggedIn.
+watch(
+    () => watchState.isLoggedIn,
+    (loggedIn) => {
+        if (loggedIn) return;
+        autoLoadAbort = true;
+        selectedGroupId.value = '';
+        auditLogs.value = [];
+        auditTotal.value = 0;
+        auditGroupMeta.value = null;
+        auditFullyLoaded.value = false;
+        auditLimitReached.value = false;
+        auditAutoLoading.value = false;
+        auditError.value = '';
+        vkEvents.value = [];
+        locationHistory.value = [];
+        resolvedUserNames.value = {};
+        profileCache.value = new Map();
+        _nameQueue = [];
+    }
+)
 
 // ── Warn leaderboards (derived from auditLogs singleton) ─────────────────────
 const warnLeaderboard = computed(() => {
@@ -588,94 +858,17 @@ function updateGroupAuditPerms(groups) {
     }
     groupAuditPermIds.value = ids;
     groupPermCheckDone.value = true;
-    try { localStorage.setItem('gm-group-audit-perms', JSON.stringify([...ids])); } catch {}
+    try { localStorage.setItem('gm-group-audit-perms', JSON.stringify([...ids])); } catch { /* storage full/blocked: cache only */ }
 }
 
 function markGroupHasData(groupId) {
     if (groupsWithCachedData.value.has(groupId)) return;
     groupsWithCachedData.value = new Set([...groupsWithCachedData.value, groupId]);
-    try { localStorage.setItem('gm-group-audit-data-ids', JSON.stringify([...groupsWithCachedData.value])); } catch {}
+    try { localStorage.setItem('gm-group-audit-data-ids', JSON.stringify([...groupsWithCachedData.value])); } catch { /* storage full/blocked: cache only */ }
 }
 
 function isGroupPermLost(groupId) {
     return groupsWithCachedData.value.has(groupId) && !groupAuditPermIds.value.has(groupId);
-}
-
-// ── SQLite-backed settings (webhook persistence) ──────────────────────────────
-let _settingsTableReady = false;
-async function ensureSettingsTable() {
-    if (_settingsTableReady) return;
-    await sqliteService.executeNonQuery(
-        `CREATE TABLE IF NOT EXISTS paw_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`
-    );
-    _settingsTableReady = true;
-}
-
-async function dbGetSetting(key) {
-    await ensureSettingsTable();
-    let val = null;
-    await sqliteService.execute(
-        (row) => { val = row[0]; },
-        `SELECT value FROM paw_settings WHERE key = '${key}'`
-    );
-    try { return val !== null ? JSON.parse(val) : null; } catch { return null; }
-}
-
-async function dbSetSetting(key, value) {
-    await ensureSettingsTable();
-    const escaped = JSON.stringify(value).replace(/'/g, "''");
-    await sqliteService.executeNonQuery(
-        `INSERT OR REPLACE INTO paw_settings (key, value) VALUES ('${key}', '${escaped}')`
-    );
-}
-
-async function initWebhooks() {
-    if (_webhookInitDone) return;
-    _webhookInitDone = true;
-    try {
-        // Load webhook configs from SQLite; fall back to localStorage for migration
-        const configs = await dbGetSetting('gm-webhooks-v1');
-        if (configs && Array.isArray(configs)) {
-            webhookConfigs.value = configs;
-        } else {
-            const raw = localStorage.getItem('gm-webhooks-v1');
-            if (raw) {
-                try {
-                    webhookConfigs.value = JSON.parse(raw);
-                    await saveWebhookConfigs();
-                } catch {}
-            }
-        }
-        // Load lastSent timestamp map
-        const lastSent = await dbGetSetting('gm-webhook-lastsent');
-        if (lastSent && typeof lastSent === 'object') {
-            webhookLastSent.value = lastSent;
-        } else {
-            const raw = localStorage.getItem('gm-webhook-lastsent');
-            if (raw) { try { webhookLastSent.value = JSON.parse(raw); } catch {} }
-        }
-    } catch (e) {
-        console.warn('[GroupMonitor] initWebhooks SQLite error, falling back to localStorage:', e);
-        try { const raw = localStorage.getItem('gm-webhooks-v1'); if (raw) webhookConfigs.value = JSON.parse(raw); } catch {}
-        try { const raw = localStorage.getItem('gm-webhook-lastsent'); if (raw) webhookLastSent.value = JSON.parse(raw); } catch {}
-    }
-}
-
-async function saveWebhookConfigs() {
-    try {
-        await dbSetSetting('gm-webhooks-v1', webhookConfigs.value);
-    } catch (e) {
-        console.warn('[GroupMonitor] SQLite webhook save failed:', e);
-        try { localStorage.setItem('gm-webhooks-v1', JSON.stringify(webhookConfigs.value)); } catch {}
-    }
-}
-
-async function saveWebhookLastSent() {
-    try {
-        await dbSetSetting('gm-webhook-lastsent', webhookLastSent.value);
-    } catch {
-        try { localStorage.setItem('gm-webhook-lastsent', JSON.stringify(webhookLastSent.value)); } catch {}
-    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -725,19 +918,14 @@ export function useGroupMonitorData() {
         loadVoteKickHistory,
         loadLocationHistory,
         refreshAll,
+        onPageActivated,
+        lastViewedGroupId,
+        nowTick,
         openProfileById,
         openProfileByName,
         // polling lifecycle
         startPolling,
         stopPolling,
-        // webhook singleton (SQLite-backed)
-        webhookConfigs,
-        webhookSendingIds,
-        webhookStatus,
-        webhookLastSent,
-        initWebhooks,
-        saveWebhookConfigs,
-        saveWebhookLastSent,
         // warn leaderboards
         warnLeaderboard,
         mostWarnedLeaderboard,

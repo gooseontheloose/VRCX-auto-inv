@@ -5,16 +5,51 @@ import { useI18n } from 'vue-i18n';
 
 import { logWebRequest } from '../services/appConfig';
 import { branches } from '../shared/constants';
-import {
-    getLatestWhatsNewRelease,
-    getWhatsNewRelease,
-    normalizeReleaseVersion
-} from '../shared/constants/whatsNewReleases';
+import { getWhatsNewRelease, normalizeReleaseVersion } from '../shared/constants/whatsNewReleases';
 import { changeLogRemoveLinks } from '../shared/utils';
 
 import configRepository from '../services/config';
 
 import * as workerTimers from 'worker-timers';
+
+/**
+ * Update modes. 'Auto Download' downloads a new release in the background and
+ * Dotnet/Update.cs installs it the next time VRCX starts.
+ */
+export const AUTO_UPDATE_MODES = Object.freeze(['Off', 'Notify', 'Auto Download']);
+export const DEFAULT_AUTO_UPDATE = 'Auto Download';
+/**
+ * Set once by 2.3.0: every install is switched to automatic updates on its
+ * first start of this version, whatever was chosen before. Choices made after
+ * that are kept.
+ */
+export const AUTO_UPDATE_MIGRATION_KEY = 'VRCX_autoUpdateMigrated_230';
+
+/**
+ * Release installer of this fork (github_actions.yml renames the NSIS output
+ * to PAWInviter_<version>_Setup.exe). Nothing else is ever downloaded as an
+ * update, so an upstream VRCX_Setup.exe can never be installed by mistake.
+ */
+export const FORK_SETUP_ASSET_RE = /^PAWInviter_\d+\.\d+\.\d+_Setup\.exe$/i;
+
+/**
+ * @param {string} stored Value of VRCX_autoUpdateVRCX
+ * @param {boolean} migrated AUTO_UPDATE_MIGRATION_KEY already set
+ * @returns {{ mode: string; persist: boolean; markMigrated: boolean }}
+ */
+export function resolveAutoUpdateMode(stored, migrated) {
+    if (!migrated) {
+        return { mode: DEFAULT_AUTO_UPDATE, persist: true, markMigrated: true };
+    }
+    if (stored === 'Auto Install') {
+        // pre-2.0 name of the same mode
+        return { mode: 'Auto Download', persist: true, markMigrated: false };
+    }
+    if (!AUTO_UPDATE_MODES.includes(stored)) {
+        return { mode: DEFAULT_AUTO_UPDATE, persist: false, markMigrated: false };
+    }
+    return { mode: stored, persist: false, markMigrated: false };
+}
 
 const emptyWhatsNewDialog = () => ({
     visible: false,
@@ -31,7 +66,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
     const isMacOS = computed(() => navigator.platform.includes('Mac'));
 
     const appVersion = ref('');
-    const autoUpdateVRCX = ref('Notify');
+    const autoUpdateVRCX = ref(DEFAULT_AUTO_UPDATE);
     const latestAppVersion = ref('');
     const branch = ref('Stable');
     const vrcxId = ref('');
@@ -65,15 +100,19 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
             noUpdater.value = true;
         }
 
-        const [VRCX_autoUpdateVRCX, VRCX_id] = await Promise.all([
-            configRepository.getString('VRCX_autoUpdateVRCX', 'Notify'),
-            configRepository.getString('VRCX_id', '')
+        const [VRCX_autoUpdateVRCX, VRCX_id, migrated] = await Promise.all([
+            configRepository.getString('VRCX_autoUpdateVRCX', DEFAULT_AUTO_UPDATE),
+            configRepository.getString('VRCX_id', ''),
+            configRepository.getString(AUTO_UPDATE_MIGRATION_KEY, '')
         ]);
 
-        if (VRCX_autoUpdateVRCX === 'Auto Install') {
-            autoUpdateVRCX.value = 'Notify';
-        } else {
-            autoUpdateVRCX.value = VRCX_autoUpdateVRCX;
+        const resolved = resolveAutoUpdateMode(VRCX_autoUpdateVRCX, Boolean(migrated));
+        autoUpdateVRCX.value = resolved.mode;
+        if (resolved.persist) {
+            await configRepository.setString('VRCX_autoUpdateVRCX', resolved.mode);
+        }
+        if (resolved.markMigrated) {
+            await configRepository.setString(AUTO_UPDATE_MIGRATION_KEY, 'true');
         }
         if (noUpdater.value) {
             autoUpdateVRCX.value = 'Off';
@@ -100,17 +139,12 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         } else {
             await syncCurrentVersionState();
         }
-        if (
-            autoUpdateVRCX.value !== 'Off' &&
-            !checkedForUpdatesDuringAnnouncement
-        ) {
+        if (autoUpdateVRCX.value !== 'Off' && !checkedForUpdatesDuringAnnouncement) {
             await checkForVRCXUpdate();
         }
     }
 
-    const currentVersion = computed(() =>
-        appVersion.value.replace(' (Linux)', '')
-    );
+    const currentVersion = computed(() => appVersion.value.replace(' (Linux)', ''));
 
     /**
      * @param {string} value
@@ -149,18 +183,12 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
     }
 
     async function hasVersionChanged() {
-        const lastVersion = await configRepository.getString(
-            'VRCX_lastVRCXVersion',
-            ''
-        );
+        const lastVersion = await configRepository.getString('VRCX_lastVRCXVersion', '');
         return lastVersion !== currentVersion.value;
     }
 
     async function markCurrentVersionAsSeen() {
-        await configRepository.setString(
-            'VRCX_lastVRCXVersion',
-            currentVersion.value
-        );
+        await configRepository.setString('VRCX_lastVRCXVersion', currentVersion.value);
     }
 
     async function syncCurrentVersionState() {
@@ -175,10 +203,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         if (branch.value !== 'Stable' || !isRecognizedStableReleaseVersion()) {
             return false;
         }
-        const lastVersion = await configRepository.getString(
-            'VRCX_lastVRCXVersion',
-            ''
-        );
+        const lastVersion = await configRepository.getString('VRCX_lastVRCXVersion', '');
         return Boolean(lastVersion) && lastVersion !== currentVersion.value;
     }
 
@@ -230,10 +255,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
 
     async function openChangeLogDialogOnly() {
         changeLogDialog.value.visible = true;
-        if (
-            !changeLogDialog.value.buildName ||
-            !changeLogDialog.value.changeLog
-        ) {
+        if (!changeLogDialog.value.buildName || !changeLogDialog.value.changeLog) {
             await checkForVRCXUpdate();
         }
     }
@@ -261,13 +283,13 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         let downloadUrl = '';
         let hashString = '';
         let size = 0;
-        for (const asset of assets) {
+        for (const asset of assets ?? []) {
             if (asset.state !== 'uploaded') {
                 continue;
             }
             if (
                 WINDOWS &&
-                asset.name.endsWith('.exe') &&
+                FORK_SETUP_ASSET_RE.test(asset.name) &&
                 (asset.content_type === 'application/x-msdownload' ||
                     asset.content_type === 'application/x-msdos-program' ||
                     asset.content_type === 'application/octet-stream')
@@ -298,9 +320,10 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         if (
             !currentVersion.value ||
             currentVersion.value === 'VRCX Nightly Build' ||
-            currentVersion.value === 'VRCX Build'
+            currentVersion.value === 'VRCX Build' ||
+            !/\d+\.\d+/.test(currentVersion.value)
         ) {
-            // ignore custom builds
+            // ignore custom builds (no version number, e.g. "PAW Inviter - VRCX Nightly Build")
             return false;
         }
         if (branch.value === 'Beta') {
@@ -353,9 +376,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
                 // update already downloaded
                 VRCXUpdateDialog.value.updatePendingIsLatest = true;
             } else if (semverGt(releaseName, currentVersion.value)) {
-                const { downloadUrl, hashString, size } = getAssetOfInterest(
-                    json.assets
-                );
+                const { downloadUrl, hashString, size } = getAssetOfInterest(json.assets);
                 if (!downloadUrl) {
                     return true;
                 }
@@ -374,12 +395,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
                 if (autoUpdateVRCX.value === 'Notify') {
                     // this.showVRCXUpdateDialog();
                 } else if (autoUpdateVRCX.value === 'Auto Download') {
-                    await downloadVRCXUpdate(
-                        downloadUrl,
-                        hashString,
-                        size,
-                        releaseName
-                    );
+                    await downloadVRCXUpdate(downloadUrl, hashString, size, releaseName);
                 }
             }
             return true;
@@ -456,12 +472,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         }
         setBranch(branch.value);
     }
-    async function downloadVRCXUpdate(
-        downloadUrl,
-        hashString,
-        size,
-        releaseName
-    ) {
+    async function downloadVRCXUpdate(downloadUrl, hashString, size, releaseName) {
         if (updateInProgress.value) {
             return;
         }
@@ -489,9 +500,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
             if (release.name !== VRCXUpdateDialog.value.release) {
                 continue;
             }
-            const { downloadUrl, hashString, size } = getAssetOfInterest(
-                release.assets
-            );
+            const { downloadUrl, hashString, size } = getAssetOfInterest(release.assets);
             if (!downloadUrl) {
                 return;
             }
@@ -518,10 +527,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
     }
 
     async function ensureChangeLogReady() {
-        if (
-            changeLogDialog.value.buildName &&
-            changeLogDialog.value.changeLog
-        ) {
+        if (changeLogDialog.value.buildName && changeLogDialog.value.changeLog) {
             return true;
         }
         return checkForVRCXUpdate();
@@ -577,6 +583,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         showChangeLogDialog,
         restartVRCX,
         updateProgressText,
-        cancelUpdate
+        cancelUpdate,
+        getAssetOfInterest
     };
 });

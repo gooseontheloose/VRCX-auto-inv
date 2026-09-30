@@ -28,8 +28,6 @@ const DELAY_PRESETS = {
     absurd: 60000
 };
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** Maximum number of entries the persistent invite cache will hold. */
 const MAX_CACHE_SIZE = 15000;
 

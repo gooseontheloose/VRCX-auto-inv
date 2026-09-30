@@ -2,10 +2,7 @@
 <html>
     <head>
         <meta charset="utf-8" />
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1, user-scalable=no"
-        />
+        <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
         <meta name="referrer" content="no-referrer" />
         <meta http-equiv="Cache-Control" content="no-cache" />
 
@@ -13,6 +10,14 @@
     </head>
     <body>
         <div id="root"></div>
+        <script>
+            // The .NET host / Electron preload inject these before page scripts;
+            // this only covers a host that predates that (no ReferenceError).
+            if (typeof window.WINDOWS === 'undefined') {
+                window.WINDOWS = typeof CefSharp !== 'undefined';
+                window.LINUX = !window.WINDOWS;
+            }
+        </script>
         <script type="module" src="./vr/vr.js"></script>
     </body>
 </html>

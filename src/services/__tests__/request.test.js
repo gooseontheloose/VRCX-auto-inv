@@ -4,12 +4,37 @@ vi.mock('../../plugins/router.js', () => ({
     initRouter: vi.fn()
 }));
 
-import {
-    buildRequestInit,
-    parseResponse,
-    processBulk,
-    shouldIgnoreError
-} from '../request.js';
+vi.mock('vue-sonner', () => ({
+    toast: { error: vi.fn(), success: vi.fn() }
+}));
+
+import { toast } from 'vue-sonner';
+
+import { $throw, $throwSilent, buildRequestInit, parseResponse, processBulk, shouldIgnoreError } from '../request.js';
+
+describe('$throw', () => {
+    test('shows an error toast by default', () => {
+        toast.error.mockClear();
+        expect(() => $throw(500, 'boom', 'groups/grp_x/auditLogs')).toThrow();
+        expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+
+    test('silent: throws the same error without a toast', () => {
+        toast.error.mockClear();
+        let err;
+        try {
+            $throwSilent(403, 'nope', 'groups/grp_x/auditLogs');
+        } catch (e) {
+            err = e;
+        }
+        expect(err.status).toBe(403);
+        expect(err.endpoint).toBe('groups/grp_x/auditLogs');
+        expect(toast.error).not.toHaveBeenCalled();
+        // and the next normal error toasts again
+        expect(() => $throw(500, 'boom', 'x/y/z')).toThrow();
+        expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+});
 
 describe('buildRequestInit', () => {
     test('builds GET request with default method', () => {
@@ -38,9 +63,7 @@ describe('buildRequestInit', () => {
             method: 'POST',
             params: { username: 'test' }
         });
-        expect(init.headers['Content-Type']).toBe(
-            'application/json;charset=utf-8'
-        );
+        expect(init.headers['Content-Type']).toBe('application/json;charset=utf-8');
         expect(init.body).toBe(JSON.stringify({ username: 'test' }));
     });
 
@@ -55,9 +78,7 @@ describe('buildRequestInit', () => {
             headers: { 'X-Custom': 'value' },
             params: { a: 1 }
         });
-        expect(init.headers['Content-Type']).toBe(
-            'application/json;charset=utf-8'
-        );
+        expect(init.headers['Content-Type']).toBe('application/json;charset=utf-8');
         expect(init.headers['X-Custom']).toBe('value');
     });
 
@@ -232,9 +253,7 @@ describe('processBulk', () => {
     });
 
     test('stops when hasNext is false', async () => {
-        const fn = vi.fn(() =>
-            Promise.resolve({ json: [1, 2, 3], hasNext: false })
-        );
+        const fn = vi.fn(() => Promise.resolve({ json: [1, 2, 3], hasNext: false }));
         const done = vi.fn();
 
         await processBulk({ fn, params: { n: 3 }, N: -1, done });

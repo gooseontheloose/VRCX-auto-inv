@@ -1,4 +1,19 @@
-import { buildPlayersPayload, sanitizeBio } from '../airiIntegration';
+import {
+    AIRI_ACCEPT_PER_HOUR_DEFAULT,
+    AIRI_ACCEPT_PER_HOUR_OPTIONS,
+    AIRI_ACTION_LIMITS,
+    buildIncomingFriendRequests,
+    buildPlayersPayload,
+    checkActionRateLimit,
+    computeActionBudget,
+    createLruMap,
+    isCacheFresh,
+    isValidAiriUserId,
+    normalizeAcceptPerHour,
+    pruneActionHistory,
+    resolveActionLimits,
+    sanitizeBio
+} from '../airiIntegration';
 
 const NOW = Date.UTC(2026, 0, 2, 3, 4, 5);
 
@@ -138,6 +153,7 @@ describe('buildPlayersPayload', () => {
             isFriend: true,
             trustLevel: 'Trusted User',
             isVRCPlus: true,
+            vrcPlusKnown: true,
             platform: 'standalonewindows',
             avatarName: 'Cat Girl',
             status: 'active',
@@ -219,6 +235,7 @@ describe('buildPlayersPayload', () => {
             isFriend: false,
             trustLevel: '',
             isVRCPlus: false,
+            vrcPlusKnown: false,
             platform: '',
             avatarName: '',
             status: '',
@@ -249,5 +266,465 @@ describe('buildPlayersPayload', () => {
         expect(payload.players).toHaveLength(1);
         expect(payload.players[0].avatarName).toBe('Cat Girl');
         expect(payload.players[0].joinTime).toBeNull();
+    });
+});
+
+const USER_A = 'usr_0f1e2d3c-4b5a-4968-8776-655443322110';
+const USER_B = 'usr_11111111-2222-4333-8444-555555555555';
+const HOUR = 60 * 60 * 1000;
+
+function sentTo(userIds, at, kind = 'friend-request') {
+    return userIds.map((userId, i) => ({
+        kind,
+        userId,
+        at: typeof at === 'function' ? at(i) : at
+    }));
+}
+
+function uniqueUsers(count) {
+    return Array.from(
+        { length: count },
+        (_, i) => `usr_00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+    );
+}
+
+describe('isValidAiriUserId', () => {
+    test('accepts usr_ + lowercase uuid', () => {
+        expect(isValidAiriUserId(USER_A)).toBe(true);
+        expect(isValidAiriUserId(USER_B)).toBe(true);
+    });
+
+    test('rejects everything else', () => {
+        for (const value of [
+            undefined,
+            null,
+            42,
+            {},
+            '',
+            'usr_',
+            'usr_a',
+            USER_A.toUpperCase(),
+            USER_A.replace('usr_', 'grp_'),
+            `${USER_A} `,
+            ` ${USER_A}`,
+            `${USER_A}\n`,
+            `${USER_A}x`,
+            USER_A.replace(/-/g, ''),
+            'usr_0f1e2d3c-4b5a-4968-8776-65544332211g',
+            "usr_0f1e2d3c-4b5a-4968-8776-655443322110');alert(1)//",
+            '8JoV9XEdpo'
+        ]) {
+            expect(isValidAiriUserId(value)).toBe(false);
+        }
+    });
+});
+
+describe('pruneActionHistory', () => {
+    test('drops malformed, future and older-than-24h entries', () => {
+        const history = [
+            { kind: 'friend-request', userId: USER_A, at: NOW - HOUR },
+            { kind: 'friend-request', userId: USER_A, at: NOW - 25 * HOUR },
+            { kind: 'friend-request', userId: USER_A, at: NOW + 1000 },
+            { kind: 'nope', userId: USER_A, at: NOW },
+            { kind: 'friend-accept', userId: 5, at: NOW },
+            { kind: 'friend-accept', userId: USER_B, at: 'x' },
+            null
+        ];
+        expect(pruneActionHistory(history, NOW)).toEqual([history[0]]);
+        expect(pruneActionHistory('nope', NOW)).toEqual([]);
+    });
+});
+
+describe('checkActionRateLimit', () => {
+    test('allows the first request', () => {
+        expect(checkActionRateLimit([], 'friend-request', USER_A, NOW)).toEqual(
+            { allowed: true }
+        );
+    });
+
+    test('only one friend request per user per 24 hours', () => {
+        const history = sentTo([USER_A], NOW - 23 * HOUR);
+        const result = checkActionRateLimit(
+            history,
+            'friend-request',
+            USER_A,
+            NOW
+        );
+        expect(result).toEqual({
+            allowed: false,
+            reason: 'user_cooldown',
+            retryAfterSec: 3600
+        });
+        expect(
+            checkActionRateLimit(history, 'friend-request', USER_B, NOW).allowed
+        ).toBe(true);
+        expect(
+            checkActionRateLimit(
+                sentTo([USER_A], NOW - 24 * HOUR),
+                'friend-request',
+                USER_A,
+                NOW
+            ).allowed
+        ).toBe(true);
+    });
+
+    test('max 10 friend requests per hour', () => {
+        const nine = sentTo(uniqueUsers(9), (i) => NOW - 50 * 60 * 1000 + i);
+        expect(
+            checkActionRateLimit(nine, 'friend-request', USER_A, NOW).allowed
+        ).toBe(true);
+        const ten = sentTo(uniqueUsers(10), (i) => NOW - 50 * 60 * 1000 + i);
+        const result = checkActionRateLimit(ten, 'friend-request', USER_A, NOW);
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toBe('hourly_limit');
+        expect(result.retryAfterSec).toBe(600);
+    });
+
+    test('max 30 friend requests per day', () => {
+        // 30 requests spread over the last 20 hours, at most 2 per hour.
+        const history = sentTo(
+            uniqueUsers(30),
+            (i) => NOW - 20 * HOUR + i * 40 * 60 * 1000
+        );
+        const hourly = history.filter((e) => NOW - e.at < HOUR).length;
+        expect(hourly).toBeLessThan(
+            AIRI_ACTION_LIMITS['friend-request'].perHour
+        );
+        const result = checkActionRateLimit(
+            history,
+            'friend-request',
+            USER_A,
+            NOW
+        );
+        expect(result).toEqual({
+            allowed: false,
+            reason: 'daily_limit',
+            retryAfterSec: 4 * 3600
+        });
+    });
+
+    test('accepts: max 60 per hour by default, no per-user cooldown', () => {
+        const users = uniqueUsers(59);
+        const accepts = sentTo(users, NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(accepts, 'friend-accept', users[0], NOW)
+                .allowed
+        ).toBe(true);
+        const full = sentTo(uniqueUsers(60), NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(full, 'friend-accept', USER_A, NOW).reason
+        ).toBe('hourly_limit');
+    });
+
+    test('the accepts-per-hour setting changes the accept limit only', () => {
+        const limits = resolveActionLimits({ acceptPerHour: 120 });
+        expect(limits['friend-accept'].perHour).toBe(120);
+        expect(limits['friend-request']).toBe(
+            AIRI_ACTION_LIMITS['friend-request']
+        );
+        const accepts = sentTo(uniqueUsers(100), NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(accepts, 'friend-accept', USER_A, NOW, limits)
+                .allowed
+        ).toBe(true);
+        expect(
+            checkActionRateLimit(
+                accepts,
+                'friend-accept',
+                USER_A,
+                NOW,
+                resolveActionLimits({ acceptPerHour: 30 })
+            ).reason
+        ).toBe('hourly_limit');
+    });
+
+    test('invalid accepts-per-hour values fall back to the default', () => {
+        expect(normalizeAcceptPerHour('90')).toBe(90);
+        expect(normalizeAcceptPerHour(5000)).toBe(AIRI_ACCEPT_PER_HOUR_DEFAULT);
+        expect(normalizeAcceptPerHour(undefined)).toBe(
+            AIRI_ACCEPT_PER_HOUR_DEFAULT
+        );
+        expect(AIRI_ACCEPT_PER_HOUR_OPTIONS).toContain(
+            AIRI_ACCEPT_PER_HOUR_DEFAULT
+        );
+    });
+
+    test('kinds are counted separately', () => {
+        const accepts = sentTo(uniqueUsers(30), NOW - 1000, 'friend-accept');
+        expect(
+            checkActionRateLimit(accepts, 'friend-request', USER_A, NOW).allowed
+        ).toBe(true);
+    });
+
+    test('unknown kinds are refused', () => {
+        expect(checkActionRateLimit([], 'unfriend', USER_A, NOW).allowed).toBe(
+            false
+        );
+    });
+});
+
+describe('buildIncomingFriendRequests', () => {
+    const ME = 'usr_99999999-9999-4999-8999-999999999999';
+
+    function fr(senderUserId, createdAt, extra = {}) {
+        return {
+            id: `frq_${senderUserId}_${createdAt}`,
+            type: 'friendRequest',
+            senderUserId,
+            senderUsername: `name ${senderUserId.slice(4, 8)}`,
+            created_at: createdAt,
+            ...extra
+        };
+    }
+
+    test('returns incoming friend requests newest first', () => {
+        const result = buildIncomingFriendRequests([
+            fr(USER_A, '2026-01-01T10:00:00.000Z'),
+            fr(USER_B, '2026-01-02T10:00:00.000Z')
+        ]);
+        expect(result).toEqual([
+            {
+                userId: USER_B,
+                displayName: 'name 1111',
+                createdAt: '2026-01-02T10:00:00.000Z'
+            },
+            {
+                userId: USER_A,
+                displayName: 'name 0f1e',
+                createdAt: '2026-01-01T10:00:00.000Z'
+            }
+        ]);
+    });
+
+    test('skips other types, expired, self, friends and invalid ids', () => {
+        const friendId = 'usr_22222222-2222-4222-8222-222222222222';
+        const result = buildIncomingFriendRequests(
+            [
+                fr(USER_A, '2026-01-01T10:00:00.000Z', { type: 'invite' }),
+                fr(USER_A, '2026-01-01T10:00:00.000Z', {
+                    type: 'ignoredFriendRequest'
+                }),
+                fr(USER_A, '2026-01-01T10:00:00.000Z', { $isExpired: true }),
+                fr(ME, '2026-01-01T10:00:00.000Z'),
+                fr(friendId, '2026-01-01T10:00:00.000Z'),
+                fr('usr_bad', '2026-01-01T10:00:00.000Z'),
+                null,
+                fr(USER_B, '2026-01-01T10:00:00.000Z')
+            ],
+            { currentUserId: ME, friendIds: new Set([friendId]) }
+        );
+        expect(result.map((r) => r.userId)).toEqual([USER_B]);
+        expect(buildIncomingFriendRequests('nope')).toEqual([]);
+    });
+
+    test('one entry per sender (newest) and a name fallback', () => {
+        const result = buildIncomingFriendRequests(
+            [
+                fr(USER_A, '2026-01-01T10:00:00.000Z'),
+                fr(USER_A, '2026-01-03T10:00:00.000Z', { senderUsername: '' }),
+                fr(USER_B, 'not a date')
+            ],
+            { displayNameFor: (id) => (id === USER_A ? 'Alice' : '') }
+        );
+        expect(result).toEqual([
+            {
+                userId: USER_A,
+                displayName: 'Alice',
+                createdAt: '2026-01-03T10:00:00.000Z'
+            },
+            { userId: USER_B, displayName: 'name 1111', createdAt: null }
+        ]);
+    });
+
+    test('caps at 50', () => {
+        const users = uniqueUsers(60);
+        const result = buildIncomingFriendRequests(
+            users.map((id, i) => fr(id, new Date(NOW + i * 1000).toISOString()))
+        );
+        expect(result).toHaveLength(50);
+        expect(result[0].userId).toBe(users[59]);
+    });
+
+    test('has its own hourly limit of 120', () => {
+        const history = Array.from({ length: 120 }, (_, i) => ({
+            kind: 'friend-requests',
+            userId: '',
+            at: NOW - 1000 - i
+        }));
+        expect(
+            checkActionRateLimit(history, 'friend-requests', '', NOW).reason
+        ).toBe('hourly_limit');
+        expect(
+            checkActionRateLimit(history, 'friend-status', USER_A, NOW).allowed
+        ).toBe(true);
+    });
+});
+
+describe('AIRI lookup cache in the payload', () => {
+    test('uses the lookup cache for bio, VRC+ and group of uncached players', () => {
+        const input = makeInput({
+            playerList: new Map([
+                ['usr_b', { userId: 'usr_b', displayName: 'Bob', joinTime: 5 }]
+            ]),
+            cachedUsers: new Map(),
+            groupsByUserId: new Map([
+                ['usr_b', { name: 'Bob Club', shortCode: 'BOB' }]
+            ]),
+            profileCache: new Map([
+                [
+                    'usr_b',
+                    {
+                        bio: 'hi discord: bob.b',
+                        isVRCPlus: true,
+                        groupName: 'x'
+                    }
+                ]
+            ])
+        });
+        const [player] = buildPlayersPayload(input).players;
+        expect(player).toMatchObject({
+            bio: 'hi',
+            isVRCPlus: true,
+            vrcPlusKnown: true,
+            representedGroup: { name: 'Bob Club', shortCode: 'BOB' }
+        });
+    });
+
+    test('a cached profile with tags wins over the lookup cache', () => {
+        const input = makeInput({
+            cachedUsers: new Map([
+                [
+                    'usr_a',
+                    makeProfile({ tags: [], $isVRCPlus: false, bio: '' })
+                ]
+            ]),
+            profileCache: new Map([
+                ['usr_a', { bio: 'from cache', isVRCPlus: true }]
+            ])
+        });
+        const [player] = buildPlayersPayload(input).players;
+        expect(player.isVRCPlus).toBe(false);
+        expect(player.vrcPlusKnown).toBe(true);
+        // Core had no bio text: the cached one fills in.
+        expect(player.bio).toBe('from cache');
+    });
+
+    test('a profile icon alone never means VRC+ (icons are free since 2026.3.1)', () => {
+        const input = makeInput({
+            cachedUsers: new Map([
+                [
+                    'usr_a',
+                    makeProfile({
+                        tags: ['system_trust_known'],
+                        $isVRCPlus: false,
+                        userIcon: 'https://example.com/icon.png'
+                    })
+                ]
+            ])
+        });
+        expect(buildPlayersPayload(input).players[0].isVRCPlus).toBe(false);
+    });
+
+    test('a limited profile without tags reports VRC+ as unknown', () => {
+        const input = makeInput({
+            cachedUsers: new Map([
+                ['usr_a', { id: 'usr_a', displayName: 'Alice' }]
+            ])
+        });
+        const [player] = buildPlayersPayload(input).players;
+        expect(player.isVRCPlus).toBe(false);
+        expect(player.vrcPlusKnown).toBe(false);
+    });
+});
+
+describe('friend requests: lobby first, then oldest', () => {
+    const USER_C = 'usr_33333333-3333-4333-8333-333333333333';
+    function fr(senderUserId, createdAt) {
+        return {
+            id: `frq_${senderUserId}`,
+            type: 'friendRequest',
+            senderUserId,
+            senderUsername: senderUserId.slice(4, 8),
+            created_at: createdAt
+        };
+    }
+
+    test('orders senders in the instance first, each group oldest first', () => {
+        const here = new Set([USER_C]);
+        const result = buildIncomingFriendRequests(
+            [
+                fr(USER_A, '2026-01-03T10:00:00.000Z'),
+                fr(USER_B, '2026-01-01T10:00:00.000Z'),
+                fr(USER_C, '2026-01-05T10:00:00.000Z')
+            ],
+            { isPresent: (id) => here.has(id) }
+        );
+        expect(result.map((r) => [r.userId, r.inLobby])).toEqual([
+            [USER_C, true],
+            [USER_B, false],
+            [USER_A, false]
+        ]);
+    });
+
+    test('an unlimited list gives the pending total', () => {
+        const users = uniqueUsers(70);
+        const all = buildIncomingFriendRequests(
+            users.map((id, i) => fr(id, new Date(NOW + i * 1000).toISOString())),
+            { isPresent: () => false, limit: Number.MAX_SAFE_INTEGER }
+        );
+        expect(all).toHaveLength(70);
+        expect(all[0].userId).toBe(users[0]);
+    });
+});
+
+describe('computeActionBudget', () => {
+    test('reports used and remaining per kind with the configured limits', () => {
+        const history = [
+            ...sentTo(uniqueUsers(3), NOW - 1000, 'friend-accept'),
+            ...sentTo(uniqueUsers(2), NOW - 2 * HOUR, 'friend-request'),
+            ...sentTo([USER_A], NOW - 1000, 'friend-request')
+        ];
+        const budget = computeActionBudget(
+            history,
+            NOW,
+            resolveActionLimits({ acceptPerHour: 90 })
+        );
+        expect(budget['friend-accept']).toEqual({
+            usedHour: 3,
+            perHour: 90,
+            remainingHour: 87,
+            usedDay: 3,
+            perDay: null,
+            remainingDay: null
+        });
+        expect(budget['friend-request']).toMatchObject({
+            usedHour: 1,
+            remainingHour: 9,
+            usedDay: 3,
+            remainingDay: 27
+        });
+        expect(budget['friend-status'].remainingHour).toBe(120);
+    });
+});
+
+describe('lookup cache helpers', () => {
+    test('isCacheFresh', () => {
+        expect(isCacheFresh(NOW - 1000, 2000, NOW)).toBe(true);
+        expect(isCacheFresh(NOW - 3000, 2000, NOW)).toBe(false);
+        expect(isCacheFresh(0, 2000, NOW)).toBe(false);
+        expect(isCacheFresh(NOW + 1000, 2000, NOW)).toBe(false);
+        expect(isCacheFresh(undefined, 2000, NOW)).toBe(false);
+    });
+
+    test('createLruMap evicts the least recently used entry', () => {
+        const lru = createLruMap(2);
+        lru.set('a', 1);
+        lru.set('b', 2);
+        expect(lru.get('a')).toBe(1);
+        lru.set('c', 3);
+        expect(lru.has('b')).toBe(false);
+        expect(lru.has('a')).toBe(true);
+        expect(lru.peek('c')).toBe(3);
+        expect(lru.size).toBe(2);
     });
 });

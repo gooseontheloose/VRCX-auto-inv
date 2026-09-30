@@ -10,7 +10,8 @@
                     <ToggleGroupItem
                         value="grid"
                         class="px-2"
-                        :class="viewMode === 'grid' && 'bg-accent text-accent-foreground'">
+                        :class="viewMode === 'grid' && 'bg-accent text-accent-foreground'"
+                        :ariaLabel="t('view.my_avatars.grid_view')">
                         <LayoutGrid class="size-4" />
                     </ToggleGroupItem>
                 </TooltipWrapper>
@@ -18,7 +19,8 @@
                     <ToggleGroupItem
                         value="table"
                         class="px-2"
-                        :class="viewMode === 'table' && 'bg-accent text-accent-foreground'">
+                        :class="viewMode === 'table' && 'bg-accent text-accent-foreground'"
+                        :ariaLabel="t('view.my_avatars.table_view')">
                         <List class="size-4" />
                     </ToggleGroupItem>
                 </TooltipWrapper>
@@ -128,7 +130,11 @@
 
             <DropdownMenu v-if="viewMode === 'grid'">
                 <DropdownMenuTrigger as-child>
-                    <Button class="rounded-full" size="icon-sm" variant="ghost">
+                    <Button
+                        class="rounded-full"
+                        size="icon-sm"
+                        variant="ghost"
+                        :ariaLabel="t('view.settings.appearance.appearance.header')">
                         <SettingsIcon class="size-4" />
                     </Button>
                 </DropdownMenuTrigger>
@@ -158,7 +164,12 @@
                 </DropdownMenuContent>
             </DropdownMenu>
 
-            <Button size="icon-sm" variant="ghost" :disabled="isLoading" @click="refreshAvatars">
+            <Button
+                size="icon-sm"
+                variant="ghost"
+                :disabled="isLoading"
+                @click="refreshAvatars"
+                :ariaLabel="t('view.charts.instance_activity.refresh')">
                 <RefreshCw :class="{ 'animate-spin': isLoading }" />
             </Button>
         </div>
@@ -407,7 +418,6 @@
     });
 
     /**
-     *
      * @param tag
      */
     function toggleTagFilter(tag) {
@@ -417,9 +427,6 @@
         tagFilters.value = next;
     }
 
-    /**
-     *
-     */
     function clearFilters() {
         releaseStatusFilter.value = 'all';
         tagFilters.value = new Set();
@@ -459,7 +466,6 @@
     });
 
     /**
-     *
      * @param avatarId
      */
     function handleShowAvatarDialog(avatarId) {
@@ -467,7 +473,6 @@
     }
 
     /**
-     *
      * @param avatarId
      */
     function handleWearAvatar(avatarId) {
@@ -489,7 +494,6 @@
     }
 
     /**
-     *
      * @param command
      * @param labelKey
      * @param fn
@@ -508,7 +512,6 @@
     }
 
     /**
-     *
      * @param action
      * @param avatarRef
      */
@@ -605,7 +608,6 @@
     }
 
     /**
-     *
      * @param root0
      * @param root0.avatarId
      * @param root0.tags
@@ -639,7 +641,6 @@
     }
 
     /**
-     *
      * @param e
      */
     function onFileChangeAvatarImage(e) {
@@ -657,8 +658,7 @@
     }
 
     /**
-     *
-     * @param blob
+     * @param {Blob} blob
      */
     async function onCropConfirmAvatar(blob) {
         const avatarRef = changeImageAvatarRef.value;
@@ -752,7 +752,6 @@
     });
 
     /**
-     *
      * @param value
      */
     function handleViewModeChange(value) {
@@ -775,7 +774,6 @@
     });
 
     /**
-     *
      * @param row
      */
     function handleRowClick(row) {
@@ -783,7 +781,6 @@
     }
 
     /**
-     *
      * @param row
      */
     function getRowClass(row) {
@@ -814,9 +811,6 @@
         };
     };
 
-    /**
-     *
-     */
     async function refreshAvatars() {
         if (isLoading.value) {
             return;

@@ -10,6 +10,7 @@ import { useAvatarProviderStore } from './avatarProvider';
 import { useAvatarStore } from './avatar';
 import { useChartsStore } from './charts';
 import { useDashboardStore } from './dashboard';
+import { useExternalLinkStore } from './externalLink';
 import { useDiscordPresenceSettingsStore } from './settings/discordPresence';
 import { useFavoriteStore } from './favorite';
 import { useFeedStore } from './feed';
@@ -21,6 +22,7 @@ import { useGeneralSettingsStore } from './settings/general';
 import { useQuickSearchStore } from './quickSearch';
 import { useGroupStore } from './group';
 import { useGroupInviteStore } from './groupInvite';
+import { useGroupMonitorStore } from './groupMonitor';
 import { useInstanceStore } from './instance';
 import { useInviteStore } from './invite';
 import { useLaunchStore } from './launch';
@@ -63,12 +65,7 @@ async function registerSentryPiniaPlugin() {
                     // @ts-ignore
                     ...state.User,
                     currentUser: null,
-                    subsetOfLanguages: null,
-                    languageDialog: {
-                        // @ts-ignore
-                        ...state.User.languageDialog,
-                        languages: null
-                    }
+                    subsetOfLanguages: null
                 },
                 GameLog: {
                     // @ts-ignore
@@ -134,6 +131,7 @@ export function createGlobalStores() {
         notificationsSettings: useNotificationsSettingsStore(),
         wristOverlaySettings: useWristOverlaySettingsStore(),
         avatarProvider: useAvatarProviderStore(),
+        externalLink: useExternalLinkStore(),
         favorite: useFavoriteStore(),
         friend: useFriendStore(),
         photon: usePhotonStore(),
@@ -161,6 +159,7 @@ export function createGlobalStores() {
         sharedFeed: useSharedFeedStore(),
         updateLoop: useUpdateLoopStore(),
         auth: useAuthStore(),
+        groupMonitor: useGroupMonitorStore(),
         vrcStatus: useVrcStatusStore(),
         charts: useChartsStore(),
         dashboard: useDashboardStore(),
@@ -174,6 +173,7 @@ export {
     useAuthStore,
     useAvatarStore,
     useAvatarProviderStore,
+    useExternalLinkStore,
     useFavoriteStore,
     useFeedStore,
     useFriendStore,
@@ -182,6 +182,7 @@ export {
     useGameLogStore,
     useGroupStore,
     useGroupInviteStore,
+    useGroupMonitorStore,
     useInstanceStore,
     useInviteStore,
     useLaunchStore,

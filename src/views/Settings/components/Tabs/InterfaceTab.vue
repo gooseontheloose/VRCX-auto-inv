@@ -86,37 +86,111 @@
                 </NumberField>
             </SettingsItem>
 
-            <SettingsItem :label="t('view.settings.appearance.appearance.show_notification_icon_dot')">
+            <SettingsItem :label="t('view.settings.appearance.appearance.show_notification_icon_dot')" toggle>
                 <Switch
                     :model-value="notificationIconDot"
+                    :ariaLabel="t('view.settings.appearance.appearance.show_notification_icon_dot')"
                     @update:modelValue="
                         setNotificationIconDot();
                         saveOpenVROption();
                     " />
             </SettingsItem>
+        </SettingsGroup>
 
-            <SettingsItem
-                :label="t('view.settings.appearance.appearance.vrcplus_profile_icons')"
-                :description="t('view.settings.appearance.appearance.vrcplus_profile_icons_description')">
+        <SettingsGroup :title="t('view.settings.appearance.user_dialog.header')">
+            <SettingsItem :label="t('view.settings.appearance.appearance.vrc_profile_themes')" toggle>
                 <Switch
-                    :model-value="displayVRCPlusIconsAsAvatar"
+                    :model-value="displayVRCProfileThemes"
+                    :ariaLabel="t('view.settings.appearance.appearance.vrc_profile_themes')"
                     @update:modelValue="
-                        setDisplayVRCPlusIconsAsAvatar();
+                        setDisplayVRCProfileThemes();
                         saveOpenVROption();
                     " />
+            </SettingsItem>
+
+            <SettingsItem
+                :label="t('view.settings.appearance.appearance.vrc_profile_backgrounds')"
+                :description="t('view.settings.appearance.appearance.vrc_profile_backgrounds_description')"
+                toggle>
+                <Switch
+                    :model-value="displayVRCProfileBackgrounds"
+                    :ariaLabel="t('view.settings.appearance.appearance.vrc_profile_backgrounds')"
+                    @update:modelValue="
+                        setDisplayVRCProfileBackgrounds();
+                        saveOpenVROption();
+                    " />
+            </SettingsItem>
+
+            <template v-if="displayVRCProfileBackgrounds">
+                <SettingsItem
+                    :label="t('view.settings.appearance.appearance.vrc_profile_backgrounds_opacity')"
+                    :description="t('view.settings.appearance.appearance.vrc_profile_backgrounds_opacity_description')">
+                    <NumberField
+                        v-model="profileBackgroundOpacity"
+                        :step="0.1"
+                        :min="0"
+                        :max="1"
+                        :format-options="{ maximumFractionDigits: 2 }"
+                        class="w-32"
+                        @update:modelValue="setProfileBackgroundOpacity">
+                        <NumberFieldContent>
+                            <NumberFieldDecrement />
+                            <NumberFieldInput />
+                            <NumberFieldIncrement />
+                        </NumberFieldContent>
+                    </NumberField>
+                </SettingsItem>
+            </template>
+
+            <SettingsItem
+                :label="t('view.settings.appearance.appearance.vrc_profile_cosmetics')"
+                :description="t('view.settings.appearance.appearance.cosmetics_description')"
+                toggle>
+                <Switch
+                    :model-value="displayVRCProfileCosmetics"
+                    :ariaLabel="t('view.settings.appearance.appearance.vrc_profile_cosmetics')"
+                    @update:modelValue="
+                        setDisplayVRCProfileCosmetics();
+                        saveOpenVROption();
+                    " />
+            </SettingsItem>
+
+            <SettingsItem
+                :label="t('view.settings.appearance.user_dialog.vrchat_notes')"
+                :description="t('view.settings.appearance.user_dialog.vrchat_notes_description')"
+                toggle>
+                <Switch
+                    :model-value="!hideUserNotes"
+                    :ariaLabel="t('view.settings.appearance.user_dialog.vrchat_notes')"
+                    @update:modelValue="setHideUserNotes" />
+            </SettingsItem>
+
+            <SettingsItem
+                :label="t('view.settings.appearance.user_dialog.vrcx_memos')"
+                :description="t('view.settings.appearance.user_dialog.vrcx_memos_description')"
+                toggle>
+                <Switch
+                    :model-value="!hideUserMemos"
+                    :ariaLabel="t('view.settings.appearance.user_dialog.vrcx_memos')"
+                    @update:modelValue="setHideUserMemos" />
             </SettingsItem>
         </SettingsGroup>
 
         <SettingsGroup :title="t('view.settings.appearance.display.header')">
-            <SettingsItem :label="t('view.settings.appearance.appearance.show_instance_id')">
-                <Switch :model-value="showInstanceIdInLocation" @update:modelValue="setShowInstanceIdInLocation" />
+            <SettingsItem :label="t('view.settings.appearance.appearance.show_instance_id')" toggle>
+                <Switch
+                    :model-value="showInstanceIdInLocation"
+                    :ariaLabel="t('view.settings.appearance.appearance.show_instance_id')"
+                    @update:modelValue="setShowInstanceIdInLocation" />
             </SettingsItem>
 
             <SettingsItem
                 :label="t('view.settings.appearance.appearance.nicknames')"
-                :description="t('view.settings.appearance.appearance.nicknames_description')">
+                :description="t('view.settings.appearance.appearance.nicknames_description')"
+                toggle>
                 <Switch
                     :model-value="!hideNicknames"
+                    :ariaLabel="t('view.settings.appearance.appearance.nicknames')"
                     @update:modelValue="
                         setHideNicknames();
                         saveOpenVROption();
@@ -125,32 +199,38 @@
 
             <SettingsItem
                 :label="t('view.settings.appearance.appearance.age_gated_instances')"
-                :description="t('view.settings.appearance.appearance.age_gated_instances_description')">
-                <Switch :model-value="isAgeGatedInstancesVisible" @update:modelValue="setIsAgeGatedInstancesVisible" />
+                :description="t('view.settings.appearance.appearance.age_gated_instances_description')"
+                toggle>
+                <Switch
+                    :model-value="isAgeGatedInstancesVisible"
+                    :ariaLabel="t('view.settings.appearance.appearance.age_gated_instances')"
+                    @update:modelValue="setIsAgeGatedInstancesVisible" />
             </SettingsItem>
 
-            <SettingsItem :label="t('view.settings.appearance.appearance.striped_data_table_mode')">
-                <Switch :model-value="isDataTableStriped" @update:modelValue="toggleStripedDataTable" />
+            <SettingsItem :label="t('view.settings.appearance.appearance.striped_data_table_mode')" toggle>
+                <Switch
+                    :model-value="isDataTableStriped"
+                    :ariaLabel="t('view.settings.appearance.appearance.striped_data_table_mode')"
+                    @update:modelValue="toggleStripedDataTable" />
             </SettingsItem>
 
             <SettingsItem
                 :label="t('view.settings.appearance.appearance.accessible_status_indicators')"
-                :description="t('view.settings.appearance.appearance.accessible_status_indicators_description')">
+                :description="t('view.settings.appearance.appearance.accessible_status_indicators_description')"
+                toggle>
                 <Switch
                     :model-value="accessibleStatusIndicators"
+                    :ariaLabel="t('view.settings.appearance.appearance.accessible_status_indicators')"
                     @update:modelValue="toggleAccessibleStatusIndicators" />
-            </SettingsItem>
-
-            <SettingsItem
-                :label="t('view.settings.appearance.appearance.use_official_status_colors')"
-                :description="t('view.settings.appearance.appearance.use_official_status_colors_description')">
-                <Switch :model-value="useOfficialStatusColors" @update:modelValue="toggleOfficialStatusColors" />
             </SettingsItem>
         </SettingsGroup>
 
         <SettingsGroup :title="t('view.settings.interface.navigation.header')">
-            <SettingsItem :label="t('view.settings.interface.navigation.show_new_dashboard_button')">
-                <Switch :model-value="showNewDashboardButton" @update:modelValue="setShowNewDashboardButton" />
+            <SettingsItem :label="t('view.settings.interface.navigation.show_new_dashboard_button')" toggle>
+                <Switch
+                    :model-value="showNewDashboardButton"
+                    :ariaLabel="t('view.settings.interface.navigation.show_new_dashboard_button')"
+                    @update:modelValue="setShowNewDashboardButton" />
             </SettingsItem>
         </SettingsGroup>
 
@@ -190,9 +270,13 @@
             </SettingsItem>
 
             <SettingsItem :label="t('view.settings.appearance.appearance.table_page_sizes')">
-                <Button size="sm" variant="outline" @click="tablePageSizesDialogOpen = true">{{
-                    t('common.actions.configure')
-                }}</Button>
+                <Button
+                    size="sm"
+                    variant="outline"
+                    :ariaLabel="t('view.settings.appearance.appearance.table_page_sizes')"
+                    @click="tablePageSizesDialogOpen = true"
+                    >{{ t('common.actions.configure') }}</Button
+                >
 
                 <Dialog v-model:open="tablePageSizesDialogOpen">
                     <DialogContent class="sm:max-w-md">
@@ -293,8 +377,11 @@
                 </ToggleGroup>
             </SettingsItem>
 
-            <SettingsItem :label="t('view.settings.appearance.timedate.force_iso_date_format')">
-                <Switch :model-value="dtIsoFormat" @update:modelValue="setDtIsoFormat" />
+            <SettingsItem :label="t('view.settings.appearance.timedate.force_iso_date_format')" toggle>
+                <Switch
+                    :model-value="dtIsoFormat"
+                    :ariaLabel="t('view.settings.appearance.timedate.force_iso_date_format')"
+                    @update:modelValue="setDtIsoFormat" />
             </SettingsItem>
 
             <SettingsItem
@@ -313,37 +400,30 @@
             </SettingsItem>
         </SettingsGroup>
 
-        <SettingsGroup :title="t('view.settings.appearance.user_dialog.header')">
-            <SettingsItem
-                :label="t('view.settings.appearance.user_dialog.vrchat_notes')"
-                :description="t('view.settings.appearance.user_dialog.vrchat_notes_description')">
-                <Switch :model-value="!hideUserNotes" @update:modelValue="setHideUserNotes" />
-            </SettingsItem>
-
-            <SettingsItem
-                :label="t('view.settings.appearance.user_dialog.vrcx_memos')"
-                :description="t('view.settings.appearance.user_dialog.vrcx_memos_description')">
-                <Switch :model-value="!hideUserMemos" @update:modelValue="setHideUserMemos" />
-            </SettingsItem>
-        </SettingsGroup>
-
         <SettingsGroup :title="t('view.settings.appearance.friend_log.header')">
-            <SettingsItem :label="t('view.settings.appearance.friend_log.hide_unfriends')">
-                <Switch :model-value="hideUnfriends" @update:modelValue="setHideUnfriends" />
+            <SettingsItem :label="t('view.settings.appearance.friend_log.hide_unfriends')" toggle>
+                <Switch
+                    :model-value="hideUnfriends"
+                    :ariaLabel="t('view.settings.appearance.friend_log.hide_unfriends')"
+                    @update:modelValue="setHideUnfriends" />
             </SettingsItem>
         </SettingsGroup>
 
         <SettingsGroup :title="t('view.settings.appearance.user_colors.header')">
             <SettingsItem
                 :label="t('view.settings.appearance.user_colors.random_colors_from_user_id')"
-                :description="t('view.settings.appearance.user_colors.random_colors_from_user_id_description')">
-                <Switch :model-value="randomUserColours" @update:modelValue="updateTrustColor('', '', true)" />
+                :description="t('view.settings.appearance.user_colors.random_colors_from_user_id_description')"
+                toggle>
+                <Switch
+                    :model-value="randomUserColours"
+                    :ariaLabel="t('view.settings.appearance.user_colors.random_colors_from_user_id')"
+                    @update:modelValue="updateTrustColor('', '', true)" />
             </SettingsItem>
             <div class="settings-item">
                 <div class="flex flex-col gap-2 py-2">
                     <div v-for="colorEntry in trustColorEntries" :key="colorEntry.key" class="flex items-center gap-3">
                         <span :class="colorEntry.tagClass">{{ t(colorEntry.labelKey) }}</span>
-                        <PresetColorPicker
+                        <ColorPickerButton
                             :model-value="trustColor[colorEntry.key]"
                             :presets="colorEntry.presets"
                             @change="updateTrustColor(colorEntry.key, $event)" />
@@ -402,7 +482,7 @@
     import { toast } from 'vue-sonner';
     import { useI18n } from 'vue-i18n';
 
-    import PresetColorPicker from '@/components/PresetColorPicker.vue';
+    import ColorPickerButton from '@/components/ColorPickerButton.vue';
     import TableLimitsDialog from '@/components/dialogs/TableLimitsDialog.vue';
     import { saveSortFavoritesOption } from '@/coordinators/favoriteCoordinator';
 
@@ -416,7 +496,10 @@
 
     const {
         appLanguage,
-        displayVRCPlusIconsAsAvatar,
+        displayVRCProfileThemes,
+        displayVRCProfileBackgrounds,
+        profileBackgroundOpacity,
+        displayVRCProfileCosmetics,
         appFontFamily,
         customFontFamily,
         appCjkFontPack,
@@ -437,14 +520,16 @@
         tablePageSizes,
         isDataTableStriped,
         accessibleStatusIndicators,
-        useOfficialStatusColors,
         showNewDashboardButton
     } = storeToRefs(appearanceSettingsStore);
 
     const appLanguageDisplayName = computed(() => getLanguageName(String(appLanguage.value)));
 
     const {
-        setDisplayVRCPlusIconsAsAvatar,
+        setDisplayVRCProfileThemes,
+        setDisplayVRCProfileBackgrounds,
+        setProfileBackgroundOpacity,
+        setDisplayVRCProfileCosmetics,
         setHideNicknames,
         setShowInstanceIdInLocation,
         setIsAgeGatedInstancesVisible,
@@ -462,7 +547,6 @@
         setTablePageSizes,
         toggleStripedDataTable,
         toggleAccessibleStatusIndicators,
-        toggleOfficialStatusColors,
         setShowNewDashboardButton,
         setAppFontFamily,
         setCustomFontFamily,
@@ -596,7 +680,6 @@
     initGetZoomLevel();
 
     /**
-     *
      * @param value
      */
     function handleSortFavoritesRadio(value) {
@@ -607,7 +690,6 @@
     }
 
     /**
-     *
      * @param value
      */
     function handleInstanceUsersSortAlphabeticalRadio(value) {
@@ -618,7 +700,6 @@
     }
 
     /**
-     *
      * @param value
      */
     function handleDtHour12Radio(value) {
@@ -630,7 +711,6 @@
     }
 
     /**
-     *
      * @param value
      */
     function handleWeekStartsOnChange(value) {
@@ -675,9 +755,6 @@
         }
     });
 
-    /**
-     *
-     */
     async function initGetZoomLevel() {
         const handleWheel = (event) => {
             if (event.ctrlKey) {
@@ -691,16 +768,10 @@
         getZoomLevel();
     }
 
-    /**
-     *
-     */
     async function getZoomLevel() {
         zoomLevel.value = ((await AppApi.GetZoom()) + 10) * 10;
     }
 
-    /**
-     *
-     */
     function setZoomLevel() {
         AppApi.SetZoom(zoomLevel.value / 10 - 10);
     }
