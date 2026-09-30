@@ -12,6 +12,45 @@ import configRepository from '../services/config';
 
 import * as workerTimers from 'worker-timers';
 
+/**
+ * Update modes. 'Auto Download' downloads a new release in the background and
+ * Dotnet/Update.cs installs it the next time VRCX starts.
+ */
+export const AUTO_UPDATE_MODES = Object.freeze(['Off', 'Notify', 'Auto Download']);
+export const DEFAULT_AUTO_UPDATE = 'Auto Download';
+/**
+ * Set once by 2.3.0: every install is switched to automatic updates on its
+ * first start of this version, whatever was chosen before. Choices made after
+ * that are kept.
+ */
+export const AUTO_UPDATE_MIGRATION_KEY = 'VRCX_autoUpdateMigrated_230';
+
+/**
+ * Release installer of this fork (github_actions.yml renames the NSIS output
+ * to PAWInviter_<version>_Setup.exe). Nothing else is ever downloaded as an
+ * update, so an upstream VRCX_Setup.exe can never be installed by mistake.
+ */
+export const FORK_SETUP_ASSET_RE = /^PAWInviter_\d+\.\d+\.\d+_Setup\.exe$/i;
+
+/**
+ * @param {string} stored Value of VRCX_autoUpdateVRCX
+ * @param {boolean} migrated AUTO_UPDATE_MIGRATION_KEY already set
+ * @returns {{ mode: string; persist: boolean; markMigrated: boolean }}
+ */
+export function resolveAutoUpdateMode(stored, migrated) {
+    if (!migrated) {
+        return { mode: DEFAULT_AUTO_UPDATE, persist: true, markMigrated: true };
+    }
+    if (stored === 'Auto Install') {
+        // pre-2.0 name of the same mode
+        return { mode: 'Auto Download', persist: true, markMigrated: false };
+    }
+    if (!AUTO_UPDATE_MODES.includes(stored)) {
+        return { mode: DEFAULT_AUTO_UPDATE, persist: false, markMigrated: false };
+    }
+    return { mode: stored, persist: false, markMigrated: false };
+}
+
 const emptyWhatsNewDialog = () => ({
     visible: false,
     titleKey: '',
@@ -27,7 +66,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
     const isMacOS = computed(() => navigator.platform.includes('Mac'));
 
     const appVersion = ref('');
-    const autoUpdateVRCX = ref('Notify');
+    const autoUpdateVRCX = ref(DEFAULT_AUTO_UPDATE);
     const latestAppVersion = ref('');
     const branch = ref('Stable');
     const vrcxId = ref('');
@@ -61,15 +100,19 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
             noUpdater.value = true;
         }
 
-        const [VRCX_autoUpdateVRCX, VRCX_id] = await Promise.all([
-            configRepository.getString('VRCX_autoUpdateVRCX', 'Notify'),
-            configRepository.getString('VRCX_id', '')
+        const [VRCX_autoUpdateVRCX, VRCX_id, migrated] = await Promise.all([
+            configRepository.getString('VRCX_autoUpdateVRCX', DEFAULT_AUTO_UPDATE),
+            configRepository.getString('VRCX_id', ''),
+            configRepository.getString(AUTO_UPDATE_MIGRATION_KEY, '')
         ]);
 
-        if (VRCX_autoUpdateVRCX === 'Auto Install') {
-            autoUpdateVRCX.value = 'Notify';
-        } else {
-            autoUpdateVRCX.value = VRCX_autoUpdateVRCX;
+        const resolved = resolveAutoUpdateMode(VRCX_autoUpdateVRCX, Boolean(migrated));
+        autoUpdateVRCX.value = resolved.mode;
+        if (resolved.persist) {
+            await configRepository.setString('VRCX_autoUpdateVRCX', resolved.mode);
+        }
+        if (resolved.markMigrated) {
+            await configRepository.setString(AUTO_UPDATE_MIGRATION_KEY, 'true');
         }
         if (noUpdater.value) {
             autoUpdateVRCX.value = 'Off';
@@ -240,13 +283,13 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         let downloadUrl = '';
         let hashString = '';
         let size = 0;
-        for (const asset of assets) {
+        for (const asset of assets ?? []) {
             if (asset.state !== 'uploaded') {
                 continue;
             }
             if (
                 WINDOWS &&
-                asset.name.endsWith('.exe') &&
+                FORK_SETUP_ASSET_RE.test(asset.name) &&
                 (asset.content_type === 'application/x-msdownload' ||
                     asset.content_type === 'application/x-msdos-program' ||
                     asset.content_type === 'application/octet-stream')
@@ -277,9 +320,10 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         if (
             !currentVersion.value ||
             currentVersion.value === 'VRCX Nightly Build' ||
-            currentVersion.value === 'VRCX Build'
+            currentVersion.value === 'VRCX Build' ||
+            !/\d+\.\d+/.test(currentVersion.value)
         ) {
-            // ignore custom builds
+            // ignore custom builds (no version number, e.g. "PAW Inviter - VRCX Nightly Build")
             return false;
         }
         if (branch.value === 'Beta') {
@@ -539,6 +583,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
         showChangeLogDialog,
         restartVRCX,
         updateProgressText,
-        cancelUpdate
+        cancelUpdate,
+        getAssetOfInterest
     };
 });

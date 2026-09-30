@@ -112,7 +112,8 @@ namespace VRCX
 
         public override bool CheckForUpdateExe()
         {
-            return File.Exists(Path.Join(Program.AppDataDirectory, "update.exe"));
+            // Same rule as the install on start: only an update this copy will actually install.
+            return Update.IsUpdateForThisInstall();
         }
 
         public override void ExecuteVrOverlayFunction(string function, string json)

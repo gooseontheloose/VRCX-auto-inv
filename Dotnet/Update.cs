@@ -10,6 +10,7 @@ using NLog;
 
 #if !LINUX
 using System.Windows.Forms;
+using Microsoft.Win32;
 #endif
 
 namespace VRCX
@@ -20,6 +21,10 @@ namespace VRCX
         private static readonly string VrcxSetupExecutable = Path.Join(Program.AppDataDirectory, "VRCX_Setup.exe");
         private static readonly string UpdateExecutable = Path.Join(Program.AppDataDirectory, "update.exe");
         private static readonly string TempDownload = Path.Join(Program.AppDataDirectory, "tempDownload");
+        // What the fork's installer (Installer/installer.nsi) writes: VIAddVersionKey "ProductName"
+        // and InstallDirRegKey (a 32-bit NSIS installer, so it lands under WOW6432Node).
+        private const string InstallerProductName = "PAW Inviter - VRCX";
+        private const string InstallDirRegistryKey = @"SOFTWARE\PAW Inviter - VRCX";
         private static readonly HttpClient httpClient;
         private static CancellationToken _cancellationToken;
         public static int UpdateProgress;
@@ -56,9 +61,83 @@ namespace VRCX
             if (File.Exists(VrcxSetupExecutable))
                 File.Delete(VrcxSetupExecutable);
 
-            if (File.Exists(UpdateExecutable))
+            if (IsUpdateForThisInstall())
                 InstallUpdate();
         }
+
+        /// <summary>
+        /// True when %AppData%\VRCX\update.exe is a PAW Inviter installer that this copy should run.
+        /// The folder is shared with upstream VRCX and with dev/portable builds of this fork: an
+        /// update downloaded by the installed copy must not be run by a build started from somewhere
+        /// else (it would launch the installer and exit instead of starting), and an upstream VRCX
+        /// setup must never be run by PAW Inviter. Whatever is skipped stays for its owner.
+        /// </summary>
+        public static bool IsUpdateForThisInstall()
+        {
+            if (!File.Exists(UpdateExecutable))
+                return false;
+#if !LINUX
+            try
+            {
+                var productName = FileVersionInfo.GetVersionInfo(UpdateExecutable).ProductName?.Trim();
+                if (!string.Equals(productName, InstallerProductName, StringComparison.Ordinal))
+                {
+                    logger.Warn($"Pending update is not a PAW Inviter installer (ProductName '{productName}'), leaving it alone");
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                logger.Warn(e, "Could not read the pending update's version info, leaving it alone");
+                return false;
+            }
+
+            var installDir = GetInstallDir();
+            if (!string.IsNullOrEmpty(installDir) && !SamePath(installDir, Program.BaseDirectory))
+            {
+                logger.Info($"Pending update belongs to the installed copy in {installDir}, not {Program.BaseDirectory}; skipping it here");
+                return false;
+            }
+#endif
+            return true;
+        }
+
+#if !LINUX
+        private static string GetInstallDir()
+        {
+            foreach (var view in new[] { RegistryView.Registry32, RegistryView.Registry64 })
+            {
+                try
+                {
+                    using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
+                    using var key = hklm.OpenSubKey(InstallDirRegistryKey);
+                    if (key?.GetValue("InstallDir") is string dir && !string.IsNullOrWhiteSpace(dir))
+                        return dir;
+                }
+                catch (Exception e)
+                {
+                    logger.Warn(e, "Could not read the install directory from the registry");
+                }
+            }
+
+            return null;
+        }
+
+        private static bool SamePath(string a, string b)
+        {
+            static string Normalize(string path) =>
+                Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            try
+            {
+                return string.Equals(Normalize(a), Normalize(b), StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+#endif
 
         private static void InstallUpdate()
         {

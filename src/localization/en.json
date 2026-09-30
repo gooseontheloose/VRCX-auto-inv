@@ -904,7 +904,7 @@
                     "update_action": "Update Action",
                     "auto_update_off": "Off",
                     "auto_update_notify": "Notify",
-                    "auto_update_download": "Auto Download",
+                    "auto_update_download": "Auto install (downloads now, installs next time VRCX starts)",
                     "change_log": "Change Log",
                     "updater_disabled": "Updater disabled, updates are handled by your package manager."
                 },
