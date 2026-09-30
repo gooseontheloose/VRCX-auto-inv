@@ -63,8 +63,10 @@ Nothing links the stats to your VRChat account, so we can only find them by your
 
 1. **Settings → System → Copy my install ID** (next to the usage stats switch) copies it. If it says there is no ID yet, nothing has been sent from this PC.
 2. If you want sending to stop too, turn the switch off first. Otherwise the next ping starts a new record under the same ID.
-3. Open an issue at [github.com/gooseontheloose/VRCX-auto-inv/issues](https://github.com/gooseontheloose/VRCX-auto-inv/issues) (or contact the maintainer privately if you prefer not to post it) with your install ID and whether you want a copy of the data, deletion, or both.
+3. Send it **privately** through GitHub's private report form: [github.com/gooseontheloose/VRCX-auto-inv/security/advisories/new](https://github.com/gooseontheloose/VRCX-auto-inv/security/advisories/new) (title it "Data request"). Only you and the maintainer can see it. Include your install ID and whether you want a copy of the data, deletion, or both.
 
-We then export everything stored under that ID (its latest-state row, daily rows and app runs) and send it to you if you asked, and delete all of it. The hourly "busiest hours" totals have no install ID in them and are not affected. Requests are handled by hand; the server's logs never contain install IDs.
+**Don't post your install ID in a public issue, Discord or anywhere else public.** It is the only key your stats are stored under: posting it links it to your account there, and anyone who knows it could send pings under it.
+
+We then export everything stored under that ID (its latest-state row, daily rows and app runs) and send it to you if you asked, and delete all of it. The hourly "busiest hours" totals have no install ID in them and are not affected. Requests are handled by hand. The telemetry server's own logs never contain install IDs; the one request that exports or deletes your data carries the ID in its address, so it appears once in the hosting provider's (Railway's) request log, which only the maintainer can see.
 
 The install ID is also the value of the key `config:vrcx_telemetryinstallid` in the `configs` table of `%AppData%\VRCX\VRCX.sqlite3`.
