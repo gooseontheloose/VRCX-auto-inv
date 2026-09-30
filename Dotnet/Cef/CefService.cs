@@ -146,22 +146,33 @@ namespace VRCX
                     DeleteUserData(userDataDir);
                 }
 
-                for (var i = 0; i < lastCefVersionParts.Length; i++)
+                else if (IsDowngrade(lastCefVersionParts, currentVersionParts))
                 {
-                    if (int.TryParse(lastCefVersionParts[i], out var lastPart) &&
-                        int.TryParse(currentVersionParts[i], out var currentPart) &&
-                        lastPart > currentPart)
-                    {
-                        logger.Info("Cef downgrade detected, deleting userdata: {0} -> {1}", lastCefVersion,
-                            currentVersion);
-                        DeleteUserData(userDataDir);
-                        break;
-                    }
+                    logger.Info("Cef downgrade detected, deleting userdata: {0} -> {1}", lastCefVersion,
+                        currentVersion);
+                    DeleteUserData(userDataDir);
                 }
             }
 
             File.WriteAllBytes(_lastCefVersionPath, Encoding.UTF8.GetBytes(currentVersion));
             logger.Info("Cef version: {0}", currentVersion);
+        }
+
+        /// <summary>
+        /// Compares versions part by part and stops at the first part that differs: 148.0.7778.180 -> 150.0.7871.115
+        /// is an upgrade. (Checking every part on its own called that a downgrade, because 180 > 115, and wiped
+        /// everyone's userdata - IndexedDB, local storage, logins - on the CefSharp 148 -> 150 update.)
+        /// </summary>
+        internal static bool IsDowngrade(string[] lastParts, string[] currentParts)
+        {
+            for (var i = 0; i < Math.Min(lastParts.Length, currentParts.Length); i++)
+            {
+                if (!int.TryParse(lastParts[i], out var lastPart) || !int.TryParse(currentParts[i], out var currentPart))
+                    return false;
+                if (lastPart != currentPart)
+                    return lastPart > currentPart;
+            }
+            return false;
         }
 
         private static void DeleteUserData(string userDataDir)
