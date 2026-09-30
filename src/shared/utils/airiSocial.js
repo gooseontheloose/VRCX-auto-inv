@@ -101,7 +101,9 @@ export const AIRI_WORLD_READ_TTL_MS = 6 * HOUR_MS;
 /** Boop emojis that read as flirty: only for targets whose age is verified 18+. */
 export const AIRI_FLIRTY_EMOJIS = Object.freeze([
     'default_kiss',
-    'default_in_love'
+    'default_in_love',
+    'default_heart',
+    'default_blushing'
 ]);
 
 /**
@@ -678,8 +680,13 @@ export function pickMessageSlot({ slots, message, preferredSlot, elapsedMs = 0 }
     const writable = (s) =>
         s.canBeUpdated !== false && slotCooldownMs(s, elapsedMs) === 0;
     if (preferredSlot !== undefined) {
+        // Slots 0-3 are Oliver's own canned lines: never rewritten, even on request.
         const preferred = list.find((s) => s.slot === preferredSlot);
-        if (preferred && writable(preferred)) {
+        if (
+            preferred &&
+            AIRI_REWRITABLE_SLOTS.includes(preferred.slot) &&
+            writable(preferred)
+        ) {
             return { slot: preferred.slot, edit: true };
         }
     }

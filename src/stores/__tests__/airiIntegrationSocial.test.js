@@ -174,9 +174,13 @@ async function makeStore({ enabled = true, social = true, dryRun = false, kinds 
     mocks.config.set('PAW_airiIntegration_enabled', enabled);
     mocks.config.set('PAW_airiIntegration_socialEnabled', social);
     mocks.config.set('PAW_airiIntegration_socialDryRun', dryRun);
-    if (kinds) {
-        mocks.config.set('PAW_airiIntegration_socialKinds', JSON.stringify(kinds));
-    }
+    // The per-action switches default to off; most tests want them all on.
+    mocks.config.set(
+        'PAW_airiIntegration_socialKinds',
+        JSON.stringify(
+            kinds ?? { boop: true, invite: true, inviteRespond: true, status: true, note: true }
+        )
+    );
     const store = useAiriIntegrationStore();
     await vi.waitFor(() => {
         expect(store.socialEnabled).toBe(social);
@@ -331,6 +335,35 @@ describe('auth and toggles', () => {
         expect(status.socialBudget.status.perDay).toBe(20);
         expect(status.socialBudget.note.perHour).toBe(60);
         expect(status.socialPause).toEqual({ paused: false, retryAfterSec: 0, strikes: 0 });
+    });
+
+    test('every per-action switch is off by default', async () => {
+        mocks.config.set('PAW_airiIntegration_enabled', true);
+        mocks.config.set('PAW_airiIntegration_socialEnabled', true);
+        mocks.config.set('PAW_airiIntegration_socialDryRun', false);
+        mocks.config.delete('PAW_airiIntegration_socialKinds');
+        const store = useAiriIntegrationStore();
+        await vi.waitFor(() => expect(store.socialEnabled).toBe(true));
+        const status = JSON.parse(store.getStatusJson());
+        expect(status.socialKinds).toEqual({ boop: false, invite: false, inviteRespond: false, status: false, note: false });
+        const res = await call(store, 'boop', { userId: USER_A });
+        expect(res.status).toBe(403);
+        expect(res.body).toMatchObject({ error: 'kind_disabled', kind: 'boop' });
+        expect(mocks.api.sendBoop).not.toHaveBeenCalled();
+    });
+
+    test('heart and blushing boops count as flirty too', async () => {
+        const store = await makeStore();
+        mocks.friends.set(USER_B, {});
+        mocks.api.getUser.mockImplementation(async () => {
+            mocks.cachedUsers.get(USER_B).ageVerificationStatus = 'hidden';
+            return { json: {} };
+        });
+        for (const emojiId of ['default_heart', 'default_blushing']) {
+            const res = await call(store, 'boop', { userId: USER_B, emojiId });
+            expect(res.body).toMatchObject({ ok: false, result: 'age_gate' });
+        }
+        expect(mocks.api.sendBoop).not.toHaveBeenCalled();
     });
 
     test('settings persist', async () => {
@@ -652,6 +685,26 @@ describe('POST /paw/invite', () => {
 describe('POST /paw/invite-respond', () => {
     beforeEach(() => {
         mocks.notifications.push({ id: NOTIFICATION, type: 'invite', senderUserId: USER_A, senderUsername: 'Alice' });
+    });
+
+    test('no slot free for the line: still answers, with canned slot 0', async () => {
+        const store = await makeStore();
+        const cooling = Object.fromEntries(
+            Array.from({ length: 12 }, (_, i) => [i, { remainingCooldownMinutes: 45 }])
+        );
+        mocks.api.refreshInviteMessageTableData.mockResolvedValue({ json: slots(cooling) });
+        const res = await call(store, 'inviteRespond', { notificationId: NOTIFICATION, message: 'omw!' });
+        expect(res.body).toMatchObject({
+            ok: true,
+            result: 'responded',
+            responseSlot: 0,
+            messageApplied: false,
+            messageSkipped: 'slot_cooldown'
+        });
+        expect(mocks.api.editInviteMessage).not.toHaveBeenCalled();
+        expect(mocks.api.sendInviteResponse).toHaveBeenCalledWith({ responseSlot: 0, rsvp: true }, NOTIFICATION, {
+            silentErrors: true
+        });
     });
 
     test('answers an invite once, with a response slot, and hides it', async () => {

@@ -93,9 +93,9 @@ export function createAiriSocial(deps) {
     const socialEnabled = ref(false);
     /** Validate, check limits and log, but never call VRChat. */
     const socialDryRun = ref(false);
-    /** Per-kind switches under the master switch (each on by default). */
+    /** Per-kind switches under the master switch (each off by default). */
     const socialKinds = reactive(
-        Object.fromEntries(AIRI_SOCIAL_KINDS.map((kind) => [kind, true]))
+        Object.fromEntries(AIRI_SOCIAL_KINDS.map((kind) => [kind, false]))
     );
     let isLoaded = false;
 
@@ -735,16 +735,11 @@ export function createAiriSocial(deps) {
         }
         const type =
             notification.type === 'invite' ? 'response' : 'requestResponse';
-        const chosen = await applyMessage(type, message.value, slot.value);
+        let chosen = await applyMessage(type, message.value, slot.value);
         if (chosen.slot === null) {
-            return [
-                200,
-                {
-                    ok: false,
-                    result: 'slot_cooldown',
-                    retryAfterSec: /** @type {any} */ (chosen).retryAfterSec
-                }
-            ];
+            // No slot can take the line right now: answer anyway with Oliver's
+            // canned slot 0 rather than leave the invite unanswered.
+            chosen = { slot: 0, applied: false, skipped: 'slot_cooldown' };
         }
         record('inviteRespond', notificationId);
         responded.add(notificationId);
@@ -778,6 +773,9 @@ export function createAiriSocial(deps) {
                 result: 'responded',
                 responseSlot: chosen.slot ?? 0,
                 messageApplied: Boolean(/** @type {any} */ (chosen).applied),
+                ...(/** @type {any} */ (chosen).skipped
+                    ? { messageSkipped: /** @type {any} */ (chosen).skipped }
+                    : {}),
                 userId: senderId
             }
         ];

@@ -341,8 +341,21 @@ describe('pickMessageSlot', () => {
         expect(pickMessageSlot({ slots, message: 'line 2' })).toEqual({ slot: 2, edit: false });
     });
 
-    test('rewrites the preferred slot when it is free', () => {
-        expect(pickMessageSlot({ slots, message: 'hiii Sam', preferredSlot: 1 })).toEqual({ slot: 1, edit: true });
+    test('rewrites the preferred slot when it is free and rewritable', () => {
+        expect(pickMessageSlot({ slots, message: 'hiii Sam', preferredSlot: 6 })).toEqual({ slot: 6, edit: true });
+    });
+
+    test('never rewrites slots 0-3, even when asked for', () => {
+        for (const preferredSlot of [0, 1, 2, 3]) {
+            const pick = pickMessageSlot({ slots, message: 'hiii Sam', preferredSlot });
+            expect(pick.edit).toBe(true);
+            expect(pick.slot).toBeGreaterThanOrEqual(4);
+        }
+        // Its own text is still reused as-is.
+        expect(pickMessageSlot({ slots, message: 'line 1', preferredSlot: 1 })).toEqual({ slot: 1, edit: false });
+        const allCooling = slots.map((s) => (s.slot >= 4 ? { ...s, remainingCooldownMinutes: 30 } : s));
+        const none = pickMessageSlot({ slots: allCooling, message: 'hiii Sam', preferredSlot: 0 });
+        expect(none.slot).toBeNull();
     });
 
     test('otherwise the least recently updated rewritable slot (never 0-3)', () => {
