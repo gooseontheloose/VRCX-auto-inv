@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia';
 const mocks = vi.hoisted(() => ({
     config: new Map(),
     cachedUsers: new Map(),
+    cachedProfiles: new Map(),
     watchState: { isLoggedIn: true },
     lastLocation: null,
     groupInvite: { rateLimitCooldownUntil: 0 },
@@ -11,7 +12,8 @@ const mocks = vi.hoisted(() => ({
     savedRows: new Map(),
     api: {
         fetch: vi.fn(),
-        getUser: vi.fn()
+        getUser: vi.fn(),
+        getPublicProfile: vi.fn()
     }
 }));
 
@@ -45,7 +47,10 @@ vi.mock('../../api', () => ({
     friendRequest: { getFriendStatus: vi.fn(), sendFriendRequest: vi.fn() },
     notificationRequest: { acceptFriendRequestNotification: vi.fn() },
     groupRequest: { getRepresentedGroup: mocks.api.fetch },
-    userRequest: { getUser: mocks.api.getUser }
+    userRequest: {
+        getUser: mocks.api.getUser,
+        getPublicProfile: mocks.api.getPublicProfile
+    }
 }));
 vi.mock('../../coordinators/friendRelationshipCoordinator', () => ({
     addFriendship: vi.fn(),
@@ -72,7 +77,8 @@ vi.mock('../groupInvite', () => ({
 vi.mock('../user', () => ({
     useUserStore: () => ({
         currentUser: { id: ME },
-        cachedUsers: mocks.cachedUsers
+        cachedUsers: mocks.cachedUsers,
+        cachedProfiles: mocks.cachedProfiles
     })
 }));
 vi.mock('../location', () => ({
@@ -126,7 +132,7 @@ function installApi({ failures = new Map() } = {}) {
     mocks.api.fetch.mockImplementation(({ userId }) =>
         respond('group', userId)
     );
-    mocks.api.getUser.mockImplementation(({ userId }) =>
+    mocks.api.getPublicProfile.mockImplementation(({ userId }) =>
         respond('profile', userId)
     );
     return calls;
@@ -164,6 +170,7 @@ beforeEach(() => {
     setActivePinia(createPinia());
     mocks.config.clear();
     mocks.cachedUsers.clear();
+    mocks.cachedProfiles.clear();
     mocks.watchState.isLoggedIn = true;
     mocks.lastLocation = null;
     mocks.groupInvite.rateLimitCooldownUntil = 0;
@@ -411,6 +418,49 @@ describe('AIRI lookups at stream scale', () => {
             isVRCPlus: true,
             vrcPlusKnown: true
         });
+    });
+
+    test('a public profile VRCX core already fetched is reused', async () => {
+        const calls = installApi();
+        // Current API: users/{id} has no bio; VRCX core loads profile/{id}.
+        mocks.cachedUsers.set(uid(6), {
+            id: uid(6),
+            displayName: 'P0',
+            tags: ['system_trust_known'],
+            $lastFetch: Date.now() - 1000
+        });
+        mocks.cachedProfiles.set(uid(6), {
+            id: uid(6),
+            bio: 'public bio',
+            hasVrcPlus: true,
+            $lastFetch: Date.now() - 1000
+        });
+        setPlayers([uid(6)]);
+        const store = await makeStore({ fetchGroups: false });
+        store.enqueueCurrentPlayers();
+        await vi.advanceTimersByTimeAsync(10 * 1000);
+        expect(calls).toHaveLength(0);
+        expect(store.buildPayload().players[0].bio).toBe('public bio');
+    });
+
+    test('a user object without a bio does not count as a fetched bio', async () => {
+        const calls = installApi();
+        mocks.cachedUsers.set(uid(7), {
+            id: uid(7),
+            displayName: 'P0',
+            tags: ['system_supporter'],
+            $lastFetch: Date.now() - 1000
+        });
+        setPlayers([uid(7)]);
+        const store = await makeStore({ fetchGroups: false });
+        store.enqueueCurrentPlayers();
+        await vi.advanceTimersByTimeAsync(10 * 1000);
+        expect(calls.map((c) => c.kind)).toEqual(['profile']);
+        expect(mocks.api.getPublicProfile).toHaveBeenCalledWith({
+            userId: uid(7)
+        });
+        expect(mocks.api.getUser).not.toHaveBeenCalled();
+        expect(store.buildPayload().players[0].bio).toBe('bio of 7');
     });
 
     test('bios are looked up on join even with groups off', async () => {

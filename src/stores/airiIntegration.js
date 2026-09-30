@@ -400,10 +400,30 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
     }
 
     /**
+     * A profile VRCX core already loaded that carries the bio. VRChat moved
+     * the bio from users/{id} to the public profile (profile/{id}), which
+     * VRCX core now fetches for every player who joins. A user object only
+     * counts when it still has a bio field (older API responses, tests).
+     * @param {string} userId
+     * @returns {any | null}
+     */
+    function coreProfile(userId) {
+        const publicProfile = userStore.cachedProfiles?.get(userId);
+        if (publicProfile?.$lastFetch) {
+            return publicProfile;
+        }
+        const core = userStore.cachedUsers.get(userId);
+        if (core?.$lastFetch && typeof core.bio === 'string') {
+            return core;
+        }
+        return null;
+    }
+
+    /**
      * Keep the bio and VRC+ flag of a full profile (from our own fetch or
      * one VRCX core already made).
      * @param {string} userId
-     * @param {any} json user object
+     * @param {any} json public profile or user object
      * @param {number} fetchedAt
      */
     function rememberProfile(userId, json, fetchedAt) {
@@ -418,7 +438,9 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
             bio: typeof json.bio === 'string' ? json.bio : '',
             isVRCPlus: Array.isArray(json.tags)
                 ? json.tags.includes('system_supporter')
-                : (entry?.isVRCPlus ?? null),
+                : typeof json.hasVrcPlus === 'boolean'
+                  ? json.hasVrcPlus
+                  : (entry?.isVRCPlus ?? null),
             bioFetchedAt: fetchedAt
         });
     }
@@ -513,8 +535,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
                 ? 'cached'
                 : 'run';
         }
-        const core = userStore.cachedUsers.get(userId);
-        if (core?.$lastFetch) {
+        const core = coreProfile(userId);
+        if (core) {
             rememberProfile(userId, core, core.$lastFetch);
             return 'core';
         }
@@ -542,7 +564,9 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
             });
             return;
         }
-        const args = await userRequest.getUser({ userId });
+        // The bio lives on the public profile now; this also fills VRCX
+        // core's profile cache (applyPublicProfile) for the user dialog.
+        const args = await userRequest.getPublicProfile({ userId });
         rememberProfile(userId, args?.json, Date.now());
     }
 
@@ -637,8 +661,8 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
             add('group');
         }
         if (shareBios.value || explicit) {
-            const core = userStore.cachedUsers.get(userId);
-            if (core?.$lastFetch) {
+            const core = coreProfile(userId);
+            if (core) {
                 rememberProfile(userId, core, core.$lastFetch);
             } else if (
                 !isCacheFresh(entry?.bioFetchedAt, AIRI_BIO_TTL_MS, now)
