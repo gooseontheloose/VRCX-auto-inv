@@ -6,6 +6,35 @@ Downloads: [GitHub Releases](https://github.com/gooseontheloose/VRCX-auto-inv/re
 
 ---
 
+## [2.3.2](https://github.com/gooseontheloose/VRCX-auto-inv/releases/tag/v2.3.2) - 2026-09-30
+
+Your player list is back after a restart, and the AIRI companion gets social actions (all opt-in, off by default).
+
+### Added
+- **AIRI social actions (opt-in, off by default).** If you use the AIRI companion, a new **Allow AIRI social actions** switch on the AIRI Integration page lets it:
+  - boop friends back,
+  - send invites and answer invite requests,
+  - set your status,
+  - write private notes on profiles.
+- **Every action has its own switch, and they all start off.** A **dry run** mode logs what AIRI would do without sending anything.
+- **Built-in limits on top of VRChat's own:**
+  - Boops: 20 an hour, 1 per friend every 30 minutes.
+  - Invites: 10 an hour, 1 per friend an hour.
+  - Invite replies: 30 an hour.
+  - Status: at least 20 minutes apart, 20 a day.
+  - Notes: 60 an hour.
+- **Friends only.** Boops and invites only go to friends, never to troll-flagged or busy users. Flirty boop emojis only go to accounts verified 18+.
+- **Your canned invite messages stay yours.** Slots 0–3 are never rewritten.
+- **One VRChat rate limit pauses everything.** Any VRChat rate limit pauses every social action, together with AIRI lookups and the auto-inviter.
+- **Action log.** Every action is written to the action log.
+- **New local AIRI endpoints** (same token and localhost checks as before): `/paw/boop`, `/paw/invite`, `/paw/invite-respond`, `/paw/self/status`, `/paw/note`, plus `/paw/events` (recent boops, invites and friend events), `/paw/user` and `/paw/world`.
+
+### Fixed
+- **The player list was empty after restarting PAW Inviter while VRChat was already in an instance.** It only showed people who joined afterwards. In a busy lobby the instance's history could fall outside what was loaded. It's now read directly, so everyone already there shows up again.
+- **Running two VRChat clients at once** (a second account with `--profile=1`): closing one no longer makes PAW Inviter think the game closed, which used to mark everyone as having left and clear your location.
+
+---
+
 ## [2.3.1](https://github.com/gooseontheloose/VRCX-auto-inv/releases/tag/v2.3.1) - 2026-09-30
 
 _2.3.0 was pulled before release; everything planned for it ships in 2.3.1._

@@ -49,6 +49,7 @@ This is a **custom fork** of [VRCX](https://github.com/vrcx-team/VRCX) — the V
 - **AIRI Integration** (opt-in, off by default): a local-only API that lets an AI companion on your PC (AIRI) see who is in your instance.
   - Bios are shared cleaned. Group lookups are paced.
   - A second opt-in switch lets AIRI send and accept friend requests, within hourly and daily limits.
+  - A third opt-in switch lets AIRI boop friends back, send and answer invites, set your status and write private notes. Each action has its own switch (all off by default), a dry-run mode and its own limits.
 - **Switch Account** menu and a theme button in the sidebar.
 - **Auto-Updates:** updates come from this GitHub repo. By default they download in the background and install the next time you start the app. You can change this under **Settings → System → VRCX Updater**.
 - **Self-Contained Build:** no .NET runtime to install. Use the installer or the portable zip.
