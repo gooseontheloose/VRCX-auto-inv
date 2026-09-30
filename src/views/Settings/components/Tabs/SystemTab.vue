@@ -80,35 +80,53 @@
         </SettingsGroup>
 
         <SettingsGroup :title="t('view.settings.general.application.header')">
-            <SettingsItem v-if="!isLinux" :label="t('view.settings.general.application.startup')">
-                <Switch :model-value="isStartAtWindowsStartup" @update:modelValue="setIsStartAtWindowsStartup" />
+            <SettingsItem v-if="!isLinux" :label="t('view.settings.general.application.startup')" toggle>
+                <Switch
+                    :model-value="isStartAtWindowsStartup"
+                    :ariaLabel="t('view.settings.general.application.startup')"
+                    @update:modelValue="setIsStartAtWindowsStartup" />
             </SettingsItem>
 
-            <SettingsItem v-if="!isLinux" :label="t('view.settings.general.application.minimized')">
-                <Switch :model-value="isStartAsMinimizedState" @update:modelValue="setIsStartAsMinimizedState" />
+            <SettingsItem v-if="!isLinux" :label="t('view.settings.general.application.minimized')" toggle>
+                <Switch
+                    :model-value="isStartAsMinimizedState"
+                    :ariaLabel="t('view.settings.general.application.minimized')"
+                    @update:modelValue="setIsStartAsMinimizedState" />
             </SettingsItem>
             <SettingsItem
                 v-else
                 :label="t('view.settings.general.application.minimized')"
-                :description="t('view.settings.general.application.startup_linux')">
-                <Switch :model-value="isStartAsMinimizedState" @update:modelValue="setIsStartAsMinimizedState" />
+                :description="t('view.settings.general.application.startup_linux')"
+                toggle>
+                <Switch
+                    :model-value="isStartAsMinimizedState"
+                    :ariaLabel="t('view.settings.general.application.minimized')"
+                    @update:modelValue="setIsStartAsMinimizedState" />
             </SettingsItem>
 
-            <SettingsItem v-if="!isMacOS" :label="t('view.settings.general.application.tray')">
-                <Switch :model-value="isCloseToTray" @update:modelValue="setIsCloseToTray" />
+            <SettingsItem v-if="!isMacOS" :label="t('view.settings.general.application.tray')" toggle>
+                <Switch
+                    :model-value="isCloseToTray"
+                    :ariaLabel="t('view.settings.general.application.tray')"
+                    @update:modelValue="setIsCloseToTray" />
             </SettingsItem>
 
             <SettingsItem
                 v-if="!isLinux"
                 :label="t('view.settings.general.application.disable_gpu_acceleration')"
-                :description="t('view.settings.general.application.disable_gpu_acceleration_tooltip')">
-                <Switch :model-value="disableGpuAcceleration" @update:modelValue="setDisableGpuAcceleration" />
+                :description="t('view.settings.general.application.disable_gpu_acceleration_tooltip')"
+                toggle>
+                <Switch
+                    :model-value="disableGpuAcceleration"
+                    :ariaLabel="t('view.settings.general.application.disable_gpu_acceleration')"
+                    @update:modelValue="setDisableGpuAcceleration" />
             </SettingsItem>
 
             <SettingsItem
                 v-if="!isLinux"
                 :label="t('view.settings.general.application.disable_vr_overlay_gpu_acceleration')"
-                :description="t('view.settings.general.application.disable_gpu_acceleration_tooltip')">
+                :description="t('view.settings.general.application.disable_gpu_acceleration_tooltip')"
+                toggle>
                 <Switch
                     :model-value="disableVrOverlayGpuAcceleration"
                     @update:modelValue="setDisableVrOverlayGpuAcceleration" />
@@ -206,9 +224,6 @@
         () => import('../../dialogs/OpenSourceSoftwareNoticeDialog.vue')
     );
 
-    /**
-     *
-     */
     function openOSSDialog() {
         ossDialog.value = true;
     }

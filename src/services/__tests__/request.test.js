@@ -10,14 +10,7 @@ vi.mock('vue-sonner', () => ({
 
 import { toast } from 'vue-sonner';
 
-import {
-    $throw,
-    $throwSilent,
-    buildRequestInit,
-    parseResponse,
-    processBulk,
-    shouldIgnoreError
-} from '../request.js';
+import { $throw, $throwSilent, buildRequestInit, parseResponse, processBulk, shouldIgnoreError } from '../request.js';
 
 describe('$throw', () => {
     test('shows an error toast by default', () => {
@@ -70,9 +63,7 @@ describe('buildRequestInit', () => {
             method: 'POST',
             params: { username: 'test' }
         });
-        expect(init.headers['Content-Type']).toBe(
-            'application/json;charset=utf-8'
-        );
+        expect(init.headers['Content-Type']).toBe('application/json;charset=utf-8');
         expect(init.body).toBe(JSON.stringify({ username: 'test' }));
     });
 
@@ -87,9 +78,7 @@ describe('buildRequestInit', () => {
             headers: { 'X-Custom': 'value' },
             params: { a: 1 }
         });
-        expect(init.headers['Content-Type']).toBe(
-            'application/json;charset=utf-8'
-        );
+        expect(init.headers['Content-Type']).toBe('application/json;charset=utf-8');
         expect(init.headers['X-Custom']).toBe('value');
     });
 
@@ -264,9 +253,7 @@ describe('processBulk', () => {
     });
 
     test('stops when hasNext is false', async () => {
-        const fn = vi.fn(() =>
-            Promise.resolve({ json: [1, 2, 3], hasNext: false })
-        );
+        const fn = vi.fn(() => Promise.resolve({ json: [1, 2, 3], hasNext: false }));
         const done = vi.fn();
 
         await processBulk({ fn, params: { n: 3 }, N: -1, done });

@@ -2,9 +2,12 @@
     <div class="flex flex-col gap-10 py-2">
         <!-- VR Core -->
         <SettingsGroup :title="t('view.settings.vr.vr_core.header')">
-            <SettingsItem :label="t('view.settings.notifications.notifications.steamvr_notifications.steamvr_overlay')">
+            <SettingsItem
+                :label="t('view.settings.notifications.notifications.steamvr_notifications.steamvr_overlay')"
+                toggle>
                 <Switch
                     :model-value="openVR"
+                    :ariaLabel="t('view.settings.notifications.notifications.steamvr_notifications.steamvr_overlay')"
                     @update:modelValue="
                         setOpenVR();
                         saveOpenVROption();
@@ -15,6 +18,7 @@
                 <Select
                     :model-value="openVRAlways ? 'true' : 'false'"
                     :disabled="!openVR"
+                    :ariaLabel="t('view.settings.wrist_overlay.steamvr_wrist_overlay.start_overlay_with')"
                     @update:modelValue="handleOpenVRAlwaysRadio">
                     <SelectTrigger size="sm">
                         <SelectValue />
@@ -30,9 +34,13 @@
                 <SettingsItem
                     :label="
                         t('view.settings.notifications.notifications.steamvr_notifications.xsoverlay_notifications')
-                    ">
+                    "
+                    toggle>
                     <Switch
                         :model-value="xsNotifications"
+                        :ariaLabel="
+                            t('view.settings.notifications.notifications.steamvr_notifications.xsoverlay_notifications')
+                        "
                         @update:modelValue="
                             setXsNotifications();
                             saveOpenVROption();
@@ -41,9 +49,13 @@
             </template>
             <template v-else>
                 <SettingsItem
-                    :label="t('view.settings.notifications.notifications.steamvr_notifications.wayvr_notifications')">
+                    :label="t('view.settings.notifications.notifications.steamvr_notifications.wayvr_notifications')"
+                    toggle>
                     <Switch
                         :model-value="xsNotifications"
+                        :ariaLabel="
+                            t('view.settings.notifications.notifications.steamvr_notifications.wayvr_notifications')
+                        "
                         @update:modelValue="
                             setXsNotifications();
                             saveOpenVROption();
@@ -57,9 +69,15 @@
                         t(
                             'view.settings.notifications.notifications.steamvr_notifications.ovrtoolkit_hud_notifications'
                         )
-                    ">
+                    "
+                    toggle>
                     <Switch
                         :model-value="ovrtHudNotifications"
+                        :ariaLabel="
+                            t(
+                                'view.settings.notifications.notifications.steamvr_notifications.ovrtoolkit_hud_notifications'
+                            )
+                        "
                         @update:modelValue="
                             setOvrtHudNotifications();
                             saveOpenVROption();
@@ -71,9 +89,15 @@
                         t(
                             'view.settings.notifications.notifications.steamvr_notifications.ovrtoolkit_wrist_notifications'
                         )
-                    ">
+                    "
+                    toggle>
                     <Switch
                         :model-value="ovrtWristNotifications"
+                        :ariaLabel="
+                            t(
+                                'view.settings.notifications.notifications.steamvr_notifications.ovrtoolkit_wrist_notifications'
+                            )
+                        "
                         @update:modelValue="
                             setOvrtWristNotifications();
                             saveOpenVROption();
@@ -86,11 +110,7 @@
         <SettingsGroup :title="t('view.settings.vr.vr_notifications.header')">
             <SettingsItem
                 :label="t('view.settings.notifications.notifications.desktop_notifications.when_to_display_vr')">
-                <ToggleGroup
-                    type="single"
-                    required
-                    variant="outline"
-                    size="sm"
+                <Select
                     :model-value="overlayToast"
                     :disabled="
                         (!overlayNotifications || !openVR) &&
@@ -102,26 +122,35 @@
                         setOverlayToast($event);
                         saveOpenVROption();
                     ">
-                    <ToggleGroupItem value="Never">{{
-                        t('view.settings.notifications.notifications.conditions.never')
-                    }}</ToggleGroupItem>
-                    <ToggleGroupItem value="Game Running">{{
-                        t('view.settings.notifications.notifications.conditions.inside_vrchat')
-                    }}</ToggleGroupItem>
-                    <ToggleGroupItem value="Game Closed">{{
-                        t('view.settings.notifications.notifications.conditions.outside_vrchat')
-                    }}</ToggleGroupItem>
-                    <ToggleGroupItem value="Always">{{
-                        t('view.settings.notifications.notifications.conditions.always')
-                    }}</ToggleGroupItem>
-                </ToggleGroup>
+                    <SelectTrigger size="sm">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="Never">{{
+                            t('view.settings.notifications.notifications.conditions.never')
+                        }}</SelectItem>
+                        <SelectItem value="Game Running">{{
+                            t('view.settings.notifications.notifications.conditions.inside_vrchat')
+                        }}</SelectItem>
+                        <SelectItem value="Game Closed">{{
+                            t('view.settings.notifications.notifications.conditions.outside_vrchat')
+                        }}</SelectItem>
+                        <SelectItem value="Always">{{
+                            t('view.settings.notifications.notifications.conditions.always')
+                        }}</SelectItem>
+                    </SelectContent>
+                </Select>
             </SettingsItem>
 
             <SettingsItem
-                :label="t('view.settings.notifications.notifications.steamvr_notifications.overlay_notifications')">
+                :label="t('view.settings.notifications.notifications.steamvr_notifications.overlay_notifications')"
+                toggle>
                 <Switch
                     :model-value="overlayNotifications"
                     :disabled="!openVR"
+                    :ariaLabel="
+                        t('view.settings.notifications.notifications.steamvr_notifications.overlay_notifications')
+                    "
                     @update:modelValue="
                         setOverlayNotifications();
                         saveOpenVROption();
@@ -170,9 +199,11 @@
                 :label="t('view.settings.notifications.notifications.steamvr_notifications.user_images')"
                 :description="
                     t('view.settings.notifications.notifications.steamvr_notifications.user_images_description')
-                ">
+                "
+                toggle>
                 <Switch
                     :model-value="imageNotifications"
+                    :ariaLabel="t('view.settings.notifications.notifications.steamvr_notifications.user_images')"
                     @update:modelValue="
                         setImageNotifications();
                         saveOpenVROption();
@@ -187,17 +218,20 @@
         <SettingsGroup :title="t('view.settings.vr.vr_extras.header')">
             <SettingsItem
                 :label="t('view.settings.advanced.advanced.video_progress_pie.header')"
-                :description="t('view.settings.advanced.advanced.video_progress_pie.enable_tooltip')">
+                :description="t('view.settings.advanced.advanced.video_progress_pie.enable_tooltip')"
+                toggle>
                 <Switch
                     :model-value="progressPie"
                     :disabled="!openVR"
+                    :ariaLabel="t('view.settings.advanced.advanced.video_progress_pie.header')"
                     @update:modelValue="changeYouTubeApi('VRCX_progressPie')" />
             </SettingsItem>
 
-            <SettingsItem :label="t('view.settings.advanced.advanced.video_progress_pie.dance_world_only')">
+            <SettingsItem :label="t('view.settings.advanced.advanced.video_progress_pie.dance_world_only')" toggle>
                 <Switch
                     :model-value="progressPieFilter"
                     :disabled="!openVR"
+                    :ariaLabel="t('view.settings.advanced.advanced.video_progress_pie.dance_world_only')"
                     @update:modelValue="changeYouTubeApi('VRCX_progressPieFilter')" />
             </SettingsItem>
         </SettingsGroup>
@@ -220,7 +254,6 @@
     import { Switch } from '@/components/ui/switch';
     import { Slider } from '@/components/ui/slider';
     import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-    import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
     import { storeToRefs } from 'pinia';
     import { useI18n } from 'vue-i18n';
 
@@ -292,22 +325,15 @@
         }
     });
 
-    /**
-     *
-     */
     function showNotificationPositionDialog() {
         isNotificationPositionDialogVisible.value = true;
     }
 
-    /**
-     *
-     */
     function showWristFeedFiltersDialog() {
         feedFiltersDialogMode.value = 'wrist';
     }
 
     /**
-     *
      * @param value
      */
     function handleOpenVRAlwaysRadio(value) {
@@ -319,7 +345,6 @@
     }
 
     /**
-     *
      * @param configKey
      */
     async function changeYouTubeApi(configKey = '') {

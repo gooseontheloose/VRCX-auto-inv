@@ -38,7 +38,11 @@ function normalizeReleaseVersion(version) {
 
 /**
  * @param {string} version
- * @returns {{titleKey: string, subtitleKey: string, items: Array<{key: string, icon: string, titleKey: string, descriptionKey: string}>} | null}
+ * @returns {{
+ *     titleKey: string;
+ *     subtitleKey: string;
+ *     items: { key: string; icon: string; titleKey: string; descriptionKey: string }[];
+ * } | null}
  */
 function getWhatsNewRelease(version) {
     const normalizedVersion = normalizeReleaseVersion(version);
@@ -64,7 +68,11 @@ function getWhatsNewRelease(version) {
 }
 
 /**
- * @returns {{titleKey: string, subtitleKey: string, items: Array<{key: string, icon: string, titleKey: string, descriptionKey: string}>} | null}
+ * @returns {{
+ *     titleKey: string;
+ *     subtitleKey: string;
+ *     items: { key: string; icon: string; titleKey: string; descriptionKey: string }[];
+ * } | null}
  */
 function getLatestWhatsNewRelease() {
     const versions = Object.keys(whatsNewReleases);
@@ -75,9 +83,4 @@ function getLatestWhatsNewRelease() {
     return getWhatsNewRelease(latestVersion);
 }
 
-export {
-    getLatestWhatsNewRelease,
-    getWhatsNewRelease,
-    normalizeReleaseVersion,
-    whatsNewReleases
-};
+export { getLatestWhatsNewRelease, getWhatsNewRelease, normalizeReleaseVersion, whatsNewReleases };

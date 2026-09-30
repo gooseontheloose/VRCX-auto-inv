@@ -10,6 +10,7 @@ import { useAvatarProviderStore } from './avatarProvider';
 import { useAvatarStore } from './avatar';
 import { useChartsStore } from './charts';
 import { useDashboardStore } from './dashboard';
+import { useExternalLinkStore } from './externalLink';
 import { useDiscordPresenceSettingsStore } from './settings/discordPresence';
 import { useFavoriteStore } from './favorite';
 import { useFeedStore } from './feed';
@@ -64,12 +65,7 @@ async function registerSentryPiniaPlugin() {
                     // @ts-ignore
                     ...state.User,
                     currentUser: null,
-                    subsetOfLanguages: null,
-                    languageDialog: {
-                        // @ts-ignore
-                        ...state.User.languageDialog,
-                        languages: null
-                    }
+                    subsetOfLanguages: null
                 },
                 GameLog: {
                     // @ts-ignore
@@ -135,6 +131,7 @@ export function createGlobalStores() {
         notificationsSettings: useNotificationsSettingsStore(),
         wristOverlaySettings: useWristOverlaySettingsStore(),
         avatarProvider: useAvatarProviderStore(),
+        externalLink: useExternalLinkStore(),
         favorite: useFavoriteStore(),
         friend: useFriendStore(),
         photon: usePhotonStore(),
@@ -176,6 +173,7 @@ export {
     useAuthStore,
     useAvatarStore,
     useAvatarProviderStore,
+    useExternalLinkStore,
     useFavoriteStore,
     useFeedStore,
     useFriendStore,
