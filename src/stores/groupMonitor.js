@@ -46,6 +46,7 @@ import monitorStorage from '../services/groupMonitor/storage';
 import { request } from '../services/request';
 import sqliteService from '../services/sqlite';
 import { onVrchatRateLimit } from '../services/vrchatRateLimit';
+import { countUsage } from '../services/telemetry';
 import { watchState } from '../services/watchState';
 import { useGroupStore } from './group';
 import { useLocationStore } from './location';
@@ -316,6 +317,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                 lastAttemptAt: now
             });
         } else if (type === 'sent') {
+            countUsage('webhookPostsOk');
             setWebhookState(item.webhookId, {
                 sending: false,
                 lastSuccessAt: now,
@@ -337,6 +339,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
             type === 'dropped' ||
             type === 'expired'
         ) {
+            if (type === 'failed' || type === 'rate_limited' || type === 'dead') countUsage('webhookPostsFailed');
             setWebhookState(item.webhookId, {
                 sending: false,
                 lastError: result?.error ?? item.lastError ?? type,
@@ -816,6 +819,7 @@ export const useGroupMonitorStore = defineStore('GroupMonitor', () => {
                 });
                 if (gen !== generation) return;
                 budget -= res.requests;
+                if (res.closed > 0) countUsage('auditGapsFilled', res.closed);
                 if (res.requests && !res.error) backfillStrikes = 0;
                 if (res.fetched.length)
                     notifyAuditListeners(gid, res.fetched, null);

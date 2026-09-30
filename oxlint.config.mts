@@ -17,7 +17,7 @@ export default defineConfig({
     categories: {
         correctness: 'off'
     },
-    ignorePatterns: ['build/**', 'Dotnet/**'],
+    ignorePatterns: ['build/**', 'Dotnet/**', 'telemetry-private/**'],
     env: {
         // specified in overrides
     },

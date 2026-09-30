@@ -28,6 +28,7 @@
     import { request } from '../../services/request';
     import { openExternalLink } from '@/shared/utils/common';
     import { useUserStore } from '@/stores/user';
+    import { countUsage } from '@/services/telemetry';
     import { Button } from '@/components/ui/button';
     import { Badge } from '@/components/ui/badge';
     import { Input } from '@/components/ui/input';
@@ -360,6 +361,7 @@
 
             log.value.unshift({ name, status, checkedAt: new Date(), verified: verified ?? false, userId: userId ?? null, isOldVisitor: isOldVisitor ?? false });
             checkedCount.value++;
+            countUsage('usernameChecks');
             if (checkedCount.value < names.length && !stopRequested.value) {
                 await sleep(DELAY_MS);
             }

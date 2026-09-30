@@ -47,6 +47,7 @@ import { useGroupInviteStore } from './groupInvite';
 import { useLocationStore } from './location';
 import { useNotificationStore } from './notification';
 import { useUserStore } from './user';
+import { countUsage } from '../services/telemetry';
 import { watchState } from '../services/watchState';
 
 import configRepository from '../services/config';
@@ -1088,6 +1089,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         }
         recordAction('friend-request', userId);
         await friendRequest.sendFriendRequest({ userId });
+        countUsage('airiFriendActions');
         addFriendRequestLog(userId, await resolveDisplayName(userId));
         return [200, { ok: true, result: 'sent' }];
     }
@@ -1120,6 +1122,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
                 // Only reached once VRChat answered the accept with success;
                 // API errors throw and become 502 / no_pending_request.
                 markAccepted(userId);
+                countUsage('airiFriendActions');
                 notificationStore.handleNotificationAccept(args);
                 return [200, { ok: true, result: 'accepted' }];
             } catch (err) {
@@ -1142,6 +1145,7 @@ export const useAiriIntegrationStore = defineStore('AiriIntegration', () => {
         recordAction('friend-accept', userId);
         await friendRequest.sendFriendRequest({ userId });
         markAccepted(userId);
+        countUsage('airiFriendActions');
         addFriendRequestLog(userId, await resolveDisplayName(userId));
         return [200, { ok: true, result: 'accepted' }];
     }

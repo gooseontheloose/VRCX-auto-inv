@@ -8,6 +8,9 @@ declare global {
     const WINDOWS: boolean;
     const LINUX: boolean;
 
+    /** True when the build includes the private telemetry module (see vite.config.js). */
+    const __PAW_TELEMETRY__: boolean;
+
     interface Window {
         $pinia: any;
         $vr: any;

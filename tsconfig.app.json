@@ -19,7 +19,8 @@
         "strict": false,
         "paths": {
             "*": ["./*"],
-            "@/*": ["./src/*"]
+            "@/*": ["./src/*"],
+            "@paw/telemetry": ["./src/services/telemetryStub.js"]
         }
     },
     "include": ["src/**/*", "src-electron/**/*"],

@@ -17,3 +17,6 @@ AI_GUIDE.md
 CLAUDE.md
 coverage/
 graphify-out/
+
+# private telemetry module (npm run telemetry:link)
+telemetry-private/

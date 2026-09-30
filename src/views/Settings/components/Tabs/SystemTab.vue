@@ -77,6 +77,8 @@
             <div v-else class="text-sm text-muted-foreground">
                 {{ t('view.settings.general.vrcx_updater.updater_disabled') }}
             </div>
+
+            <component :is="TelemetrySettingsItem" v-if="TelemetrySettingsItem" />
         </SettingsGroup>
 
         <SettingsGroup :title="t('view.settings.general.application.header')">
@@ -213,6 +215,11 @@
 
     const { appVersion, autoUpdateVRCX, latestAppVersion, noUpdater } = storeToRefs(vrcxUpdaterStore);
     const { setAutoUpdateVRCX, checkForVRCXUpdate, showVRCXUpdateDialog, showChangeLogDialog } = vrcxUpdaterStore;
+
+    // Compile-time: only builds with the telemetry module include (and show) the switch.
+    const TelemetrySettingsItem = __PAW_TELEMETRY__
+        ? defineAsyncComponent(() => import('../TelemetrySettingsItem.vue'))
+        : null;
 
     const ossDialog = ref(false);
     const isLinux = computed(() => LINUX);

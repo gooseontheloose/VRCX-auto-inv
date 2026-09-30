@@ -35,8 +35,38 @@ jobs:
     build_frontend:
         runs-on: ubuntu-latest
         needs: set_version
+        outputs:
+            telemetry: ${{ steps.telemetry_check.outputs.telemetry }}
+        env:
+            # Tag (release) builds must include the private telemetry module; every other build
+            # (manual runs, forks) is a stub build that sends nothing.
+            IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
         steps:
             - uses: actions/checkout@v6
+            - name: Require telemetry deploy key (releases only)
+              if: startsWith(github.ref, 'refs/tags/v')
+              env:
+                  DEPLOY_KEY: ${{ secrets.PAW_TELEMETRY_DEPLOY_KEY }}
+              run: |
+                  if [ -z "$DEPLOY_KEY" ]; then
+                      echo "::error::Secret PAW_TELEMETRY_DEPLOY_KEY is not set; a release build needs the telemetry module."
+                      exit 1
+                  fi
+            - name: Check out telemetry module (releases only)
+              if: startsWith(github.ref, 'refs/tags/v')
+              uses: actions/checkout@v6
+              with:
+                  repository: gooseontheloose/paw-telemetry
+                  ssh-key: ${{ secrets.PAW_TELEMETRY_DEPLOY_KEY }}
+                  persist-credentials: false
+                  path: telemetry-private
+            - name: Require a deployed telemetry endpoint (releases only)
+              if: startsWith(github.ref, 'refs/tags/v')
+              run: |
+                  if grep -q 'TODO(deploy)' telemetry-private/client/constants.js; then
+                      echo "::error::telemetry-private/client/constants.js still has the placeholder URL (TODO(deploy)). Deploy the server and set the real URL first."
+                      exit 1
+                  fi
             - name: Set version
               run: echo "${{ needs.set_version.outputs.version }}" > Version
             - uses: actions/setup-node@v6
@@ -52,7 +82,22 @@ jobs:
                   restore-keys: ${{ runner.os }}-node-
             - run: npm ci
             - name: Build frontend
+              env:
+                  PAW_TELEMETRY_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
               run: npm run prod
+            - name: Check telemetry build mode
+              id: telemetry_check
+              run: |
+                  if grep -rqF "collects anonymous usage stats" build/html; then MODE=real; else MODE=stub; fi
+                  echo "telemetry=$MODE" >> "$GITHUB_OUTPUT"
+                  echo "Telemetry: $MODE"
+                  if [[ "$IS_RELEASE" == "true" && "$MODE" != "real" ]]; then
+                      echo "::error::Release build does not include the telemetry module."
+                      exit 1
+                  fi
+            - name: Remove telemetry module checkout
+              if: always()
+              run: rm -rf telemetry-private
             - uses: actions/upload-artifact@v7
               with:
                   name: cef-html
@@ -131,8 +176,13 @@ jobs:
     release:
         runs-on: ubuntu-latest
         if: startsWith(github.ref, 'refs/tags/v')
-        needs: [set_version, build_windows, package]
+        needs: [set_version, build_frontend, build_windows, package]
         steps:
+            - name: Require the telemetry module in the release build
+              if: needs.build_frontend.outputs.telemetry != 'real'
+              run: |
+                  echo "::error::The frontend was built without the telemetry module (got '${{ needs.build_frontend.outputs.telemetry }}'). Not publishing."
+                  exit 1
             - uses: actions/checkout@v6
               with:
                   sparse-checkout: release-notes

@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 
+import { countUsage } from '../services/telemetry';
 import { watchState } from '../services/watchState';
 
 import AiriIntegration from './../views/AiriIntegration/AiriIntegration.vue';
@@ -164,6 +165,12 @@ export const router = createRouter({
     history: createWebHashHistory(),
     // @ts-ignore
     routes
+});
+
+router.afterEach((to, from, failure) => {
+    if (!failure && typeof to.name === 'string' && to.name.startsWith('group-monitor') && to.name !== from.name) {
+        countUsage('gmPageViews');
+    }
 });
 
 export function initRouter(app) {

@@ -9,6 +9,8 @@ export default defineConfig({
     plugins: [vue(), vueJsx()],
     define: {
         NIGHTLY: JSON.stringify(false),
+        // Tests always run against the no-op telemetry stub.
+        __PAW_TELEMETRY__: JSON.stringify(false),
         WINDOWS: JSON.stringify(true),
         LINUX: JSON.stringify(false)
     },
@@ -33,8 +35,9 @@ export default defineConfig({
         }
     },
     resolve: {
-        alias: {
-            '@': resolve(import.meta.dirname, 'src')
-        }
+        alias: [
+            { find: /^@paw\/telemetry$/, replacement: resolve(import.meta.dirname, 'src/services/telemetryStub.js') },
+            { find: '@', replacement: resolve(import.meta.dirname, 'src') }
+        ]
     }
 });

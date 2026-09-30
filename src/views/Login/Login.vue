@@ -174,6 +174,7 @@
                     <p>{{ t('view.settings.general.legal_notice.info') }}</p>
                     <p>{{ t('view.settings.general.legal_notice.disclaimer1') }}</p>
                     <p>{{ t('view.settings.general.legal_notice.disclaimer2') }}</p>
+                    <component :is="TelemetryNotice" v-if="TelemetryNotice" class="mt-2" />
                 </div>
             </div>
         </div>
@@ -189,7 +190,7 @@
         DropdownMenuContent,
         DropdownMenuTrigger
     } from '@/components/ui/dropdown-menu';
-    import { onBeforeMount, onBeforeUnmount, ref, watch } from 'vue';
+    import { defineAsyncComponent, onBeforeMount, onBeforeUnmount, ref, watch } from 'vue';
     import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
     import IconFrame from '@/components/IconFrame.vue';
     import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/components/ui/item';
@@ -220,6 +221,11 @@
     import { watchState } from '../../services/watchState';
 
     import LoginSettingsDialog from './Dialog/LoginSettingsDialog.vue';
+
+    // Compile-time: only builds with the telemetry module include (and show) the notice.
+    const TelemetryNotice = __PAW_TELEMETRY__
+        ? defineAsyncComponent(() => import('../../components/TelemetryNotice.vue'))
+        : null;
 
     const { userImage } = useUserDisplay();
     const { showVRCXUpdateDialog } = useVRCXUpdaterStore();

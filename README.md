@@ -116,6 +116,17 @@ Releases are built for Windows only. See [CHANGELOG.md](./CHANGELOG.md) for rele
 - For a guide on how to run on Linux, see [here](https://github.com/gooseontheloose/VRCX-auto-inv/wiki/Running-VRCX-on-Linux)
 - Interested in contributing? See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines.
 
+## Telemetry
+
+Official PAW Inviter releases send anonymous usage stats so we can see how many installs are active, how long the app stays open and which features get used. It's on by default; turn it off in **Settings → System → Send anonymous usage stats** and nothing more is sent. A one-line note on the login screen and under that switch links to [PRIVACY.md](./PRIVACY.md), which lists exactly what is sent.
+
+- **When:** at start, every 20 minutes while the app is open, and once when you close it.
+- **Sent:** a random install ID (a UUID made on your PC, not based on anything), a random ID for this app run, the app version, OS, CEF or Electron, your UI language code (e.g. `en`), on/off flags for PAW features, your update setting, and counts of how often a few features were used since the last ping (invites sent, Auto Inviter turned on, Group Monitor pages opened, webhook posts delivered / failed, audit-log gaps filled, usernames checked, AIRI friend actions, VRChat crash rejoins). Numbers only.
+- **Never sent:** your VRChat account, user IDs, display names, friends, worlds, instances, groups, bios, logs, file paths, computer name or anything you type. Your IP address isn't stored (the hosting provider sees it briefly, like with any website).
+- **Kept:** 400 days, then deleted (an install's latest-state row 400 days after its last ping).
+
+The telemetry code lives in a private module that only official release builds include. If you build PAW Inviter yourself (`npm run prod`), you get a no-op stub: no switch, no note, nothing is sent.
+
 # Screenshots
 
 <div align="center">

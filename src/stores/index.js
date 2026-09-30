@@ -34,6 +34,7 @@ import { useNotificationsSettingsStore } from './settings/notifications';
 import { usePhotonStore } from './photon';
 import { useSearchStore } from './search';
 import { useSharedFeedStore } from './sharedFeed';
+import { useTelemetryStore } from './telemetry';
 import { useUiStore } from './ui';
 import { useToolsStore } from './tools';
 import { useUpdateLoopStore } from './updateLoop';
@@ -165,7 +166,8 @@ export function createGlobalStores() {
         dashboard: useDashboardStore(),
         modal: useModalStore(),
         quickSearch: useQuickSearchStore(),
-        airiIntegration: useAiriIntegrationStore()
+        airiIntegration: useAiriIntegrationStore(),
+        telemetry: useTelemetryStore()
     };
 }
 
@@ -208,6 +210,7 @@ export {
     useVRCXUpdaterStore,
     useWorldStore,
     useSharedFeedStore,
+    useTelemetryStore,
     useUpdateLoopStore,
     useVrcStatusStore,
     useModalStore,

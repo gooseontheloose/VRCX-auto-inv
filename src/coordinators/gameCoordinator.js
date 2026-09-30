@@ -1,6 +1,7 @@
 import { toast } from 'vue-sonner';
 
 import { deleteVRChatCache as _deleteVRChatCache, isRealInstance } from '../shared/utils';
+import { countUsage } from '../services/telemetry';
 import { database } from '../services/database';
 import { useAdvancedSettingsStore } from '../stores/settings/advanced';
 import { useAvatarStore } from '../stores/avatar';
@@ -214,6 +215,7 @@ function runRestartCrashedGameFlow(location) {
     notificationStore.queueGameLogNoty(entry);
     gameLogStore.addGameLog(entry);
     launchStore.launchGame(location, '', gameStore.isGameNoVR);
+    countUsage('crashRejoin');
 }
 
 /**

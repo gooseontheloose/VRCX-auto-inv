@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import fs from 'node:fs';
 
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, searchForWorkspaceRoot } from 'vite';
 import { browserslistToTargets } from 'lightningcss';
 
 import browserslist from 'browserslist';
@@ -31,6 +31,48 @@ function remixiconWoff2Only() {
                 }
             }
         }
+    };
+}
+
+/**
+ * Picks the module behind the `@paw/telemetry` alias.
+ *
+ * Official builds include the private telemetry module: a checkout of the private
+ * paw-telemetry repo in ./telemetry-private (`npm run telemetry:link`) or at PAW_TELEMETRY_DIR.
+ * Without it the app is built with src/services/telemetryStub.js, which sends nothing, and the
+ * settings switch and notice are compiled out (`__PAW_TELEMETRY__` is false).
+ * PAW_TELEMETRY_REQUIRED=1 (release CI) makes a missing module a build error.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {{ real: boolean; entry: string; dir: string }}
+ */
+function resolveTelemetryModule(env) {
+    const dir = env.PAW_TELEMETRY_DIR
+        ? resolve(env.PAW_TELEMETRY_DIR)
+        : resolve(import.meta.dirname, '../telemetry-private');
+    const realEntry = resolve(dir, 'client/index.js');
+    const real = fs.existsSync(realEntry);
+    if (!real && env.PAW_TELEMETRY_REQUIRED === '1') {
+        throw new Error(
+            `PAW_TELEMETRY_REQUIRED=1 but the telemetry module was not found at ${realEntry}. ` +
+                'Run "npm run telemetry:link" or set PAW_TELEMETRY_DIR.'
+        );
+    }
+    if (real && env.PAW_TELEMETRY_REQUIRED === '1') {
+        // A release must not ship with the module's placeholder endpoint (an undeployed domain
+        // someone else could claim). The private repo marks it with TODO(deploy).
+        const constants = resolve(dir, 'client/constants.js');
+        if (fs.existsSync(constants) && fs.readFileSync(constants, 'utf8').includes('TODO(deploy)')) {
+            throw new Error(
+                `The telemetry endpoint in ${constants} is still a placeholder (TODO(deploy)). ` +
+                    'Deploy the server and set the real URL in the paw-telemetry repo first.'
+            );
+        }
+    }
+    return {
+        real,
+        entry: real ? realEntry : resolve(import.meta.dirname, 'services/telemetryStub.js'),
+        dir
     };
 }
 
@@ -102,6 +144,9 @@ export default defineConfig(({ mode }) => {
 
     const nightly = mode === 'development' || version.split('-').at(-1).length === 7;
 
+    const telemetry = resolveTelemetryModule({ ...loadEnv(mode, process.cwd(), 'PAW_'), ...process.env });
+    console.log(`[telemetry] ${telemetry.real ? 'telemetry module included' : 'no-op stub (no telemetry)'}`);
+
     /** @type {import('vite').UserConfig} */
     return {
         base: '',
@@ -129,9 +174,10 @@ export default defineConfig(({ mode }) => {
                 )
         ],
         resolve: {
-            alias: {
-                '@': resolve(import.meta.dirname, '.')
-            }
+            alias: [
+                { find: /^@paw\/telemetry$/, replacement: telemetry.entry },
+                { find: '@', replacement: resolve(import.meta.dirname, '.') }
+            ]
         },
         css: {
             transformer: 'lightningcss',
@@ -159,11 +205,17 @@ export default defineConfig(({ mode }) => {
         },
         define: {
             VERSION: JSON.stringify(version),
-            NIGHTLY: JSON.stringify(nightly)
+            NIGHTLY: JSON.stringify(nightly),
+            __PAW_TELEMETRY__: JSON.stringify(telemetry.real)
         },
         server: {
             port: 9000,
-            strictPort: true
+            strictPort: true,
+            fs: {
+                allow: telemetry.real
+                    ? [searchForWorkspaceRoot(process.cwd()), telemetry.dir]
+                    : [searchForWorkspaceRoot(process.cwd())]
+            }
         },
         build: {
             target: 'chrome145',

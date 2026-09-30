@@ -8,6 +8,7 @@ import { useFriendStore } from './friend';
 import { useGroupStore } from './group';
 import { useLocationStore } from './location';
 import { useUserStore } from './user';
+import { countUsage } from '../services/telemetry';
 import { watchState } from '../services/watchState';
 import { parseLocation } from '../shared/utils';
 
@@ -449,6 +450,7 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
             markInvited(userId, groupId, worldName, senderName);
             rateLimitStrikes.value = 0;
             addLog(userId, displayName, groupId, 'sent', 'Group Invite', worldName, senderName);
+            countUsage('invitesSent');
             console.log(`[GroupInvite] SUCCESS: Group Invite sent to ${displayName} (${userId})!`);
             return { sent: true, apiCalled: true };
         } catch (err) {
@@ -503,6 +505,7 @@ export const useGroupInviteStore = defineStore('GroupInvite', () => {
             markInvited(userId, locationTag, worldName);
             rateLimitStrikes.value = 0;
             addLog(userId, displayName, locationTag, 'sent', 'Instance Invite', worldName);
+            countUsage('invitesSent');
             console.log(`[InstanceInvite] SUCCESS: Invite sent to ${displayName} for ${worldName}`);
             return { sent: true, apiCalled: true };
         } catch (err) {
