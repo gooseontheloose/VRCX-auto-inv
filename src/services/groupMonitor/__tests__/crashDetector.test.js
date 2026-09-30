@@ -26,7 +26,8 @@ describe('crashCutoffIso', () => {
         expect('2026-09-29T08:00:00.000Z' >= cutoff).toBe(false);
         expect('2026-09-29T11:50:00.000Z' >= cutoff).toBe(true);
         // what the old query compared against
-        expect('2026-09-29T08:00:00.000Z' >= '2026-09-29 11:50:00').toBe(true);
+        const oldCutoff = '2026-09-29 11:50:00';
+        expect('2026-09-29T08:00:00.000Z' >= oldCutoff).toBe(true);
     });
 });
 
